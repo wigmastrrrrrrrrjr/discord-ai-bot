@@ -1,0 +1,24 @@
+{
+  "name": "discord-ai-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.scripts.json",
+    "test": "vitest run",
+    "clear-commands": "tsx scripts/clear-commands.ts",
+    "announce": "node scripts/announce.mjs",
+    "db:migrate:local": "wrangler d1 migrations apply discord-ai-bot --local",
+    "db:migrate:remote": "wrangler d1 migrations apply discord-ai-bot --remote"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261030.1",
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5",
+    "wrangler": "^4.156.0"
+  }
+}

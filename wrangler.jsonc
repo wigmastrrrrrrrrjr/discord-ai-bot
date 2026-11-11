@@ -1,0 +1,66 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "discord-ai-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-30",
+  "observability": {
+    "enabled": true
+  },
+  "services": [
+    { "binding": "MROUTER_SERVICE", "service": "mrouter" }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "CONVERSATIONS",
+      "id": "f06b87339f774699b9801a3c92c8d6e3"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "discord-ai-bot",
+      "database_id": "7147b4c2-5004-4bc1-ac37-90b23e6315b2",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GATEWAY",
+        "class_name": "DiscordGateway"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["DiscordGateway"]
+    }
+  ],
+  "vars": {
+    "SANDBOX_URL": "https://3000-ixvnwtywbnt22s4p9la1r-b9b802c4.sandbox.novita.ai",
+    "SANDBOX_TIMEOUT_MS": "60000",
+    "AI_PROVIDER_ORDER": "mrouter,openrouter,ollama,workers-ai",
+    "V2_AGENT_URL": "https://disclaimers-regulation-decent-tours.trycloudflare.com",
+    "WORKERS_AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "OPENROUTER_MODEL": "openai/gpt-4o-mini",
+    "OLLAMA_BASE_URL": "https://ollama.com",
+    "OLLAMA_MODEL": "llama3.3:70b",
+    "MAX_HISTORY_MESSAGES": "20",
+    "MAX_TEMP_BLOB_BYTES": "5242880",
+    "TEMP_BLOB_TTL_DAYS": "30",
+    "DEVICE_TIMEOUT_MS": "4000",
+    "MAX_UPLOAD_BYTES": "26214400",
+    "MAX_DISCORD_UPLOAD_BYTES": "8388608",
+    "MAX_TOOL_READ_BYTES": "65536",
+    "SYNC_BATCH_SIZE": "10",
+    "ALLOW_AI_FILE_WRITES": "false",
+    "SHOW_PROVIDER": "true"
+  },
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  }
+}
