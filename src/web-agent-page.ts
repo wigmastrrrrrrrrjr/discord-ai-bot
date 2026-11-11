@@ -41,7 +41,17 @@ export const WEB_AGENT_HTML = `<!doctype html>
   .composer textarea { flex:1; background:#0e141d; color:var(--text); border:1px solid var(--line); border-radius:10px; padding:11px 12px; font:inherit; resize:none; min-height:44px; max-height:160px; }
   .composer button { background:var(--accent); border:0; color:#fff; border-radius:10px; padding:0 18px; cursor:pointer; font-size:15px; }
   .composer button:disabled { opacity:.45; cursor:default; }
-  .status { font-size:11px; color:var(--dim); min-height:14px; }
+  .status { font-size:11px; color:var(--dim); min-height:16px; }
+  .shimmer {
+    background: linear-gradient(90deg, #8ea0b3 25%, #e8f1fb 50%, #8ea0b3 75%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: shine 1.4s linear infinite;
+    letter-spacing: .3px;
+  }
+  @keyframes shine { from { background-position: 200% 0; } to { background-position: -200% 0; } }
   .err { color:var(--bad); font-size:13px; padding:0 18vw 10px; }
 </style>
 </head>
@@ -229,6 +239,12 @@ export const WEB_AGENT_HTML = `<!doctype html>
     renderApp();
   }
 
+  function shimmer(node, text) {
+    if (!node) return;
+    node.textContent = text;
+    node.classList.add('shimmer');
+  }
+
   async function send() {
     if (state.busy) return;
     var ta = byId('prompt');
@@ -242,7 +258,8 @@ export const WEB_AGENT_HTML = `<!doctype html>
     var botIdx = state.messages.length - 1;
     drawMessages();
     var statusEl = byId('status');
-    statusEl.textContent = 'Thinking…';
+    shimmer(statusEl, 'thinking…');
+    var lastTool = null;
     try {
       var res = await fetch('/api/web/agent/chat', {
         method: 'POST',
@@ -273,15 +290,33 @@ export const WEB_AGENT_HTML = `<!doctype html>
           if (payload.event === 'delta' && payload.text) {
             state.messages[botIdx].content += payload.text;
             drawMessages();
+            shimmer(statusEl, 'writing…');
           }
-          if (payload.event === 'status' && payload.status) statusEl.textContent = payload.status;
-          if (payload.event === 'done') { state.messages[botIdx].content = payload.text || state.messages[botIdx].content; }
+          if (payload.event === 'status' && payload.status) {
+            var raw = String(payload.status);
+            var toolMatch = raw.match(/^Using\s+([a-z0-9_]+)…?$/i);
+            if (toolMatch) {
+              lastTool = toolMatch[1];
+              shimmer(statusEl, 'running ' + toolMatch[1].replace(/_/g, ' ') + '…');
+            } else if (/^(thinking|reading|writing|running)/i.test(raw)) {
+              shimmer(statusEl, raw.toLowerCase());
+            } else {
+              shimmer(statusEl, raw.toLowerCase().replace(/…$/, '') + '…');
+            }
+          }
+          if (payload.event === 'done') {
+            state.messages[botIdx].content = payload.text || state.messages[botIdx].content;
+            if (lastTool) {
+              shimmer(statusEl, 'used ' + lastTool.replace(/_/g, ' '));
+              setTimeout(function () { statusEl.textContent = ''; statusEl.className = 'status'; }, 1600);
+            }
+          }
           if (payload.event === 'error') throw new Error(payload.text || 'Agent failed');
         }
       }
       var data = await api('/api/web/agent/sessions');
       state.sessions = data.sessions || [];
-      statusEl.textContent = '';
+      if (statusEl.className.indexOf('shimmer') >= 0 && !lastTool) { statusEl.textContent = ''; statusEl.className = 'status'; }
     } catch (error) {
       byId('err').textContent = 'Agent failed: ' + error.message;
       if (!state.messages[botIdx].content) state.messages.splice(botIdx, 1);
@@ -289,7 +324,7 @@ export const WEB_AGENT_HTML = `<!doctype html>
       state.busy = false;
       byId('send').disabled = false;
       drawMessages();
-      statusEl.textContent = '';
+      if (!lastTool) { statusEl.textContent = ''; statusEl.className = 'status'; }
     }
   }
 
