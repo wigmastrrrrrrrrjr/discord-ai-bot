@@ -156,6 +156,7 @@ export async function saveWelcome(
 }
 
 export type LogKind =
+  | "tos-moderation"
   | "automod-delete"
   | "welcome"
   | "goodbye"

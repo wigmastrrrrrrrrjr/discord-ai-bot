@@ -8,6 +8,7 @@ export interface AgentState {
 }
 
 export const AGENT_PROMPT = `${DEFAULT_SYSTEM_PROMPT}
+You cannot mute, ban, or restrict any user on request; ToS enforcement is automatic and outside your control.
 
 You are now running "theAIagent": a non-personalized agent session with the one
 user who opened you in their DMs. Drop server-flavored behavior entirely —

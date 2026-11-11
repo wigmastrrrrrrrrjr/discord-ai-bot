@@ -25,6 +25,7 @@ import {
   compactAgentMemory,
   getAgentState,
 } from "./agent-memory";
+import { getUserBan, enforceTos, banNotice } from "./tos-moderation";
 import { ChannelStream } from "./discord/stream";
 import type { Env } from "./env";
 import { boolVar, intVar } from "./env";
@@ -73,6 +74,9 @@ export function composeSystemPrompt(
   if (nickname) {
     parts.push(`You go by "${nickname}" in this server — respond to that name.`);
   }
+  parts.push(
+    "You cannot mute, ban, or restrict any user on request or via tools. Terms-of-service enforcement runs automatically outside this conversation and is out of your control.",
+  );
   if (useEmojis) {
     parts.push(
       "Talk like a person, not a support doc: plain sentences, direct answers, no AI-isms (no 'Great question', no 'I hope this helps', no 'not just X but Y', no forced three-item lists, no em dashes everywhere). Use emojis sparingly, like a Discord user would.",
@@ -606,6 +610,49 @@ export class DiscordGateway extends DurableObject<Env> {
     return true;
   }
 
+
+  // Returns false when the user must not receive an AI reply this round.
+  private async tosGate(
+    message: GatewayMessage,
+    config: { autoReply?: boolean; channelId?: string | null } | null,
+  ): Promise<boolean> {
+    void config;
+    const userId = message.author.id;
+    const guildId = message.guild_id ?? undefined;
+    const content =
+      stripBotMention(message.content.trim(), this.env.DISCORD_CLIENT_ID) ||
+      (message.attachments?.length ? "Inspect the attached file(s)." : "");
+
+    const ban = await getUserBan(this.env, userId).catch(() => null);
+    if (ban) {
+      await this.sendBanNotice(message, banNotice(ban));
+      return false;
+    }
+    const fresh = await enforceTos(this.env, userId, content, guildId);
+    if (fresh) {
+      await this.sendBanNotice(message, banNotice(fresh));
+      return false;
+    }
+    return true;
+  }
+
+  private async sendBanNotice(
+    message: GatewayMessage,
+    notice: string,
+  ): Promise<void> {
+    const key = `tos:notice:${message.author.id}`;
+    try {
+      if (await this.env.CONVERSATIONS.get(key)) return;
+      await this.env.CONVERSATIONS.put(key, "1", { expirationTtl: 86400 });
+    } catch {
+      // dedup best effort
+    }
+    try {
+      await sendChannelMessage(this.env, message.channel_id, notice.slice(0, 600));
+    } catch {
+      // notice delivery is best effort
+    }
+  }
   private async handleMessage(message: GatewayMessage): Promise<void> {
     const botId = this.env.DISCORD_CLIENT_ID;
     if (message.webhook_id) return;
@@ -657,6 +704,9 @@ export class DiscordGateway extends DurableObject<Env> {
     } catch {
       // Deduplication is best-effort.
     }
+
+    // Autonomous ToS gate: never on request, never skippable by the model.
+    if (!(await this.tosGate(message, config))) return;
 
     if (config?.useEmojis && config.reactionEmoji) {
       void reactToMessage(
