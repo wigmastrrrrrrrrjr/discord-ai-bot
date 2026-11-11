@@ -41,6 +41,8 @@ export interface Env {
   OLLAMA_MODEL?: string;
   ALLOW_OPENCODE_AGENT?: string;
   AGENT_MEMORY_MAX_CHARS?: string;
+  CONV_HISTORY_MAX_CHARS?: string;
+  WEB_HISTORY_MAX_CHARS?: string;
   V2_AGENT_URL?: string;
   BOT_OWNER_ID?: string;
   GOOGLE_CLIENT_ID?: string;

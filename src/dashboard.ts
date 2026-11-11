@@ -23,6 +23,8 @@ import {
   listGuildChannels,
 } from "./discord/rest";
 import { WEB_AGENT_HTML } from "./web-agent-page";
+import { OWNER_HTML } from "./owner-page";
+import { handleOwnerApi, isOwnerRequest } from "./owner-api";
 import { LANDING_HTML } from "./landing-page";
 import { DASHBOARD_HTML } from "./dashboard-page";
 import { completeWithFallback } from "./ai/router";
@@ -557,6 +559,16 @@ export async function handleDashboard(
       name: session.name,
       picture: session.picture,
     });
+  }
+
+  if (url.pathname === "/owner" && request.method === "GET") {
+    return new Response(OWNER_HTML, {
+      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+    });
+  }
+
+  if (url.pathname.startsWith("/api/owner/")) {
+    return handleOwnerApi(env, request, url);
   }
 
   if (url.pathname === "/agent" && request.method === "GET") {

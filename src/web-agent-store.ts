@@ -31,6 +31,35 @@ function secret(env: Env): string {
   return env.WEB_SESSION_SECRET ?? "unconfigured";
 }
 
+// Auto-reset guard: a web session that grows past this char budget
+// (~75k tokens, well inside every model's context) drops its oldest
+// messages instead of failing the run with a too-long-context error.
+const DEFAULT_MAX_HISTORY_CHARS = 300000;
+const MAX_MESSAGE_CHARS = 8000;
+
+function historyMaxChars(env: Env): number {
+  const configured = Number(env.WEB_HISTORY_MAX_CHARS);
+  return configured > 0 ? configured : DEFAULT_MAX_HISTORY_CHARS;
+}
+
+function trimSession(env: Env, session: WebAgentSession): WebAgentSession {
+  const budget = historyMaxChars(env);
+  const messages = session.messages
+    .slice(-200)
+    .map((message) => ({
+      ...message,
+      content: message.content.slice(0, MAX_MESSAGE_CHARS),
+    }));
+  let total = 0;
+  let start = messages.length;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    total += messages[i].content.length;
+    if (total > budget) break;
+    start = i;
+  }
+  return { ...session, messages: messages.slice(start) };
+}
+
 function indexKey(userId: string): string {
   return `webagent-idx:${userId}`;
 }
@@ -226,10 +255,7 @@ export async function saveSession(
 ): Promise<void> {
   const blob = await encryptPayload(
     secret(env),
-    JSON.stringify({
-      ...session,
-      messages: session.messages.slice(-100),
-    }),
+    JSON.stringify(trimSession(env, session)),
   );
   const ref = sessionRef(env, userId, session.id);
   ref.d1Binds = [userId, session.id, blob];
