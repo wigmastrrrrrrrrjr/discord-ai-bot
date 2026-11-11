@@ -23,6 +23,7 @@ import {
   listGuildChannels,
 } from "./discord/rest";
 import { WEB_AGENT_HTML } from "./web-agent-page";
+import { LANDING_HTML } from "./landing-page";
 import { DASHBOARD_HTML } from "./dashboard-page";
 import { completeWithFallback } from "./ai/router";
 import { v2Health } from "./v2-agent";
@@ -301,10 +302,13 @@ export async function handleDashboard(
   env: Env,
   url: URL,
 ): Promise<Response> {
-  if (
-    request.method === "GET" &&
-    (url.pathname === "/" || url.pathname === "/dashboard")
-  ) {
+  if (request.method === "GET" && url.pathname === "/") {
+    return new Response(LANDING_HTML, {
+      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300" },
+    });
+  }
+
+  if (request.method === "GET" && url.pathname === "/dashboard") {
     const manageToken = url.searchParams.get("token");
     if (manageToken) return handleManageToken(env, request, url);
     return new Response(DASHBOARD_HTML, {
