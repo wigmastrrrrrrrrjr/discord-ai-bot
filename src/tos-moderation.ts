@@ -13,6 +13,9 @@ const CHECK_SYSTEM = [
   "sexual content or dating/romance roleplay; content sexualizing minors; violent threats; self-harm encouragement;",
   "hate or harassment targeting people; doxxing or privacy invasion; spam, abuse, or evasion of safety controls.",
   "Mere rudeness, profanity without harassment, coding help with dual-use implications that stay benign, and normal topics are NOT violations.",
+  "CRITICAL: talking ABOUT rules is not breaking them. Jokes, claims like \"I'm breaking the TOS\", \"ban me\", bait,",
+  "hypotheticals, meta-discussion, or describing violations without actually providing/committing the content are NOT violations.",
+  "A violation requires the message itself to contain or concretely request the prohibited material.",
   "Reply ONLY with compact JSON: {\"violation\":bool,\"severity\":\"temporary\"|\"permanent\",\"reason\":\"<=160 chars\"}.",
   "severity \"permanent\" only for minors content or credible threats/illegal-harm plans. Otherwise \"temporary\".",
   "If no violation: {\"violation\":false,\"severity\":\"temporary\",\"reason\":\"\"}.",
@@ -137,13 +140,42 @@ export async function checkTos(
       reason?: string;
     };
     if (!parsed.violation) return null;
+    // Second pass: require independent agreement before punishing anyone.
+    const confirmed = await thisVerify(env, content.slice(0, 1000), guildId);
+    if (!confirmed) return null;
     return {
       violation: true,
-      permanent: parsed.severity === "permanent",
+      permanent: confirmed,
       reason: (parsed.reason || "Terms of Service violation").slice(0, 160),
     };
   } catch {
     return null; // fail open: the check itself must not break chat
+  }
+}
+
+async function thisVerify(env: Env, content: string, guildId?: string): Promise<boolean | null> {
+  try {
+    const result = await completeWithFallback(env, {
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a strict appeals reviewer. Re-examine this single message for an actual terms-of-service violation. " +
+            "Claims, jokes, bait, or talk about breaking rules are NOT violations. Only concrete prohibited content or requests count. " +
+            'Reply ONLY {"confirm":true,"permanent":bool} or {"confirm":false}.',
+        },
+        { role: "user", content },
+      ],
+      maxTokens: 60,
+      temperature: 0,
+      guildId,
+    });
+    const match = result.content.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    const parsed = JSON.parse(match[0]) as { confirm?: boolean; permanent?: boolean };
+    return parsed.confirm === true ? Boolean(parsed.permanent) : false;
+  } catch {
+    return null; // tie goes to the user
   }
 }
 
