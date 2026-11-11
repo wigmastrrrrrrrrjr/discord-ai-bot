@@ -43,6 +43,9 @@ export interface Env {
   AGENT_MEMORY_MAX_CHARS?: string;
   V2_AGENT_URL?: string;
   BOT_OWNER_ID?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  WEB_SESSION_SECRET?: string;
   V2_AGENT_TOKEN?: string;
   BOT_UPDATE_TOKEN?: string;
   MRROUTER_API_KEY?: string;

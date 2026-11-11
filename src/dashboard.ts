@@ -5,6 +5,15 @@ import {
   getGuildBasics,
   sendChannelMessage,
 } from "./discord/rest";
+import {
+  listSessions as listWebAgentSessions,
+  loadSession as loadWebAgentSession,
+} from "./web-agent-store";
+import {
+  startGoogleAuth,
+  finishGoogleAuth,
+  webSessionLogout,
+} from "./web-agent-auth";
 import { readManageToken } from "./manage-token";
 import { listUserBans, unbanUser } from "./tos-moderation";
 import {
@@ -13,6 +22,7 @@ import {
   listBotGuilds,
   listGuildChannels,
 } from "./discord/rest";
+import { WEB_AGENT_HTML } from "./web-agent-page";
 import { DASHBOARD_HTML } from "./dashboard-page";
 import { completeWithFallback } from "./ai/router";
 import { v2Health } from "./v2-agent";
@@ -189,7 +199,7 @@ function isSameOrigin(request: Request, url: URL): boolean {
   return request.headers.get("origin") === url.origin;
 }
 
-async function loadSession(
+export async function loadSession(
   env: Env,
   request: Request,
 ): Promise<{ session: Session; token: string } | null> {
@@ -477,6 +487,65 @@ export async function handleDashboard(
   if (url.pathname === "/api/bot/update") {
     if (request.method === "GET") return apiBotUpdatePreview(env, request);
     if (request.method === "POST") return apiBotUpdatePost(env, request);
+  }
+
+  if (url.pathname === "/auth/google" && request.method === "GET") {
+    return startGoogleAuth(env, request);
+  }
+
+  if (url.pathname === "/auth/google/callback" && request.method === "GET") {
+    return finishGoogleAuth(env, request);
+  }
+
+  if (url.pathname === "/auth/google/logout" && request.method === "GET") {
+    return webSessionLogout(env, request);
+  }
+
+  if (url.pathname === "/api/web/me" && request.method === "GET") {
+    const { loadWebSession } = await import("./web-agent-auth");
+    const session = await loadWebSession(env, request);
+    if (!session) return apiError("Not logged in", 401);
+    return jsonResponse({
+      sub: session.sub,
+      email: session.email,
+      name: session.name,
+      picture: session.picture,
+    });
+  }
+
+  if (url.pathname === "/agent" && request.method === "GET") {
+    return new Response(WEB_AGENT_HTML, {
+      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+    });
+  }
+
+  if (url.pathname === "/api/web/me2" && request.method === "GET") {
+    const { getWebIdentity } = await import("./web-agent-auth");
+    const identity = await getWebIdentity(env, request);
+    if (!identity) return apiError("Not logged in", 401);
+    return jsonResponse({ identity });
+  }
+
+  if (url.pathname.startsWith("/api/web/agent/") && !request.method.startsWith("GET")) {
+    const { getWebIdentity } = await import("./web-agent-auth");
+    const identity = await getWebIdentity(env, request);
+    if (!identity) return apiError("Not logged in", 401);
+    return handleWebAgentApi(env, request, url, identity);
+  }
+  if (url.pathname === "/api/web/agent/sessions" && request.method === "GET") {
+    const { getWebIdentity } = await import("./web-agent-auth");
+    const identity = await getWebIdentity(env, request);
+    if (!identity) return apiError("Not logged in", 401);
+    return jsonResponse({ sessions: await listWebAgentSessions(env, identity.id) });
+  }
+  if (url.pathname === "/api/web/agent/session" && request.method === "GET") {
+    const { getWebIdentity } = await import("./web-agent-auth");
+    const identity = await getWebIdentity(env, request);
+    if (!identity) return apiError("Not logged in", 401);
+    const sessionId = url.searchParams.get("id") ?? "";
+    const session = await loadWebAgentSession(env, identity.id, sessionId);
+    if (!session) return apiError("No such session", 404);
+    return jsonResponse({ session });
   }
 
   if (request.method === "POST" && url.pathname === "/api/agent/test") {
@@ -3362,4 +3431,105 @@ async function apiVerifyComplete(env: Env, request: Request): Promise<Response> 
   } catch (error) {
     return apiError(error instanceof Error ? error.message : String(error), 500);
   }
+}
+
+
+async function handleWebAgentApi(
+  env: Env,
+  request: Request,
+  url: URL,
+  identity: { id: string },
+): Promise<Response> {
+  const {
+    createSession: createWebAgentSession,
+    saveSession: saveWebAgentSession,
+    deleteSession: deleteWebAgentSession,
+    titleFromPrompt,
+  } = await import("./web-agent-store");
+  const { runAgent } = await import("./agent");
+  const { DEFAULT_SYSTEM_PROMPT } = await import("./env");
+
+  let body: Record<string, unknown> = {};
+  try {
+    body = (await request.json()) as Record<string, unknown>;
+  } catch {
+    // empty body
+  }
+
+  const pathname = url.pathname;
+
+  if (pathname === "/api/web/agent/sessions" && request.method === "POST") {
+    const title = typeof body.title === "string" ? body.title : "New chat";
+    const session = await createWebAgentSession(env, identity.id, title);
+    await saveWebAgentSession(env, identity.id, session);
+    return jsonResponse({ session: { id: session.id, title: session.title, createdAt: session.createdAt, updatedAt: session.updatedAt } });
+  }
+
+  if (pathname === "/api/web/agent/session/delete" && request.method === "POST") {
+    const removed = await deleteWebAgentSession(env, identity.id, String(body.id ?? ""));
+    return jsonResponse({ removed });
+  }
+
+  if (pathname === "/api/web/agent/chat" && request.method === "POST") {
+    const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+    if (!prompt) return apiError("Prompt is required");
+    let sessionId = typeof body.sessionId === "string" && body.sessionId ? body.sessionId : "";
+    let session = sessionId
+      ? await loadWebAgentSession(env, identity.id, sessionId)
+      : null;
+    if (!session) {
+      session = await createWebAgentSession(env, identity.id, titleFromPrompt(prompt));
+      sessionId = session.id;
+    }
+    const encoder = new TextEncoder();
+    const stream = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = stream.writable.getWriter();
+    const sendEvent = async (event: string, data: Record<string, unknown>) => {
+      await writer.write(
+        encoder.encode(`data: ${JSON.stringify({ event, ...data })}\n\n`),
+      );
+    };
+    const history = session.messages.map(
+      (m: { role: string; content: string }) =>
+        ({ role: m.role, content: m.content }) as { role: "user" | "assistant"; content: string },
+    );
+    session.messages.push({ role: "user", content: prompt, at: Date.now() });
+    const done = (async () => {
+      try {
+        await sendEvent("meta", { sessionId });
+        const result = await runAgent(env, {
+          scope: `web/${identity.id}/${sessionId}`,
+          userId: identity.id,
+          history,
+          prompt,
+          systemPrompt: DEFAULT_SYSTEM_PROMPT,
+          stream: {
+            onDelta: async (text) => {
+              await sendEvent("delta", { text });
+            },
+            onStatus: async (status) => sendEvent("status", { status }),
+          },
+        });
+        session!.messages.push({ role: "assistant", content: result.text, at: Date.now() });
+        session!.updatedAt = Date.now();
+        if (session!.title === "New chat") session!.title = titleFromPrompt(prompt);
+        await saveWebAgentSession(env, identity.id, session!);
+        await sendEvent("done", { text: result.text });
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error);
+        await sendEvent("error", { text: text.slice(0, 300) });
+      } finally {
+        await writer.close();
+      }
+    })();
+    void done;
+    return new Response(stream.readable, {
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-store",
+      },
+    });
+  }
+
+  return apiError("Unknown web agent route", 404);
 }
