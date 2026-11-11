@@ -1,4 +1,5 @@
 import { runAgent } from "./agent";
+import { userHistoryKey } from "./github-auth";
 import { getGuildCommand, renderCommandPrompt } from "./custom-commands";
 import { InteractionStream } from "./discord/stream";
 import { intVar } from "./env";
@@ -39,7 +40,11 @@ export async function runCustomCommand(
   });
 
   const scope = `guilds/${interaction.guild_id}`;
-  const historyKey = `conv:guild:${interaction.guild_id}:${channelId || "commands"}:command:${name}`;
+  const historyKey = await userHistoryKey(
+    env,
+    `conv:guild:${interaction.guild_id}:${channelId || "commands"}:command:${name}`,
+    userId,
+  );
   const maxHistory = intVar(env.MAX_HISTORY_MESSAGES, 20);
   const history = await loadHistory(env, historyKey, maxHistory);
   const requestEnv = await applyGuildApiKeys(env, interaction.guild_id);

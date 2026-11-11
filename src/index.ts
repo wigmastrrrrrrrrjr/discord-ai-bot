@@ -78,7 +78,7 @@ export default {
 
     if (interaction.type === InteractionType.ApplicationCommand) {
       if (isDefaultCommand(interaction.data?.name)) {
-        return runDefaultCommand(env, interaction, request);
+        return runDefaultCommand(env, interaction, request, ctx);
       }
       return jsonResponse({ type: 4, data: { content: "Custom commands are disabled.", flags: 64 } });
     }

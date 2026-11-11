@@ -1,4 +1,5 @@
 import { completeWithFallback } from "./ai/router";
+import { getGithubAuth } from "./github-auth";
 import { executeTool, toolsFor } from "./ai/tools";
 import { applyGuildApiKeys } from "./guild-secrets";
 import type { ChatMessage, ChatResponse, StreamHandlers } from "./ai/types";
@@ -212,7 +213,12 @@ export async function runAgent(
         name: call.function.name,
         args: toolArgs.slice(0, 300),
       });
-      const result = await executeTool(requestEnv, options.scope, call);
+      const ghAuth = options.userId
+        ? await getGithubAuth(requestEnv, options.userId).catch(() => null)
+        : null;
+      const result = await executeTool(requestEnv, options.scope, call, {
+        ghToken: ghAuth?.token ?? null,
+      });
       await stream?.onToolEvent?.({
         phase: "end",
         name: call.function.name,

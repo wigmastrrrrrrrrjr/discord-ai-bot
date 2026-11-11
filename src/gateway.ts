@@ -30,6 +30,7 @@ import { getUserBan, enforceTos, banNotice } from "./tos-moderation";
 import { ChannelStream } from "./discord/stream";
 import type { Env } from "./env";
 import { boolVar, intVar } from "./env";
+import { getGithubAuth, userHistoryKey } from "./github-auth";
 import { loadHistory, saveHistory } from "./memory";
 import { recordBanForUser, assignUnverifiedRoleOnJoin } from "./verify-service";
 import {
@@ -748,9 +749,15 @@ export class DiscordGateway extends DurableObject<Env> {
     // Per-user session per channel: if two people prompt while the bot is
     // already answering, each gets their own conversation stream instead of
     // both fighting over one shared history.
-    const historyKey = message.guild_id
+    const rawHistoryKey = message.guild_id
       ? `conv:guild:${message.guild_id}:${message.channel_id}:u${message.author.id}`
       : `conv:dm:${message.author.id}`;
+    // GitHub-linked users get their own encrypted ghconv: namespace.
+    const historyKey = await userHistoryKey(
+      this.env,
+      rawHistoryKey,
+      message.author.id,
+    );
     const maxHistory = intVar(this.env.MAX_HISTORY_MESSAGES, 20);
 
     let stream: ChannelStream | undefined;
@@ -877,7 +884,11 @@ export class DiscordGateway extends DurableObject<Env> {
 
     const requestEnv = await applyGuildApiKeys(this.env, guildId);
     const tools = toolsFor(requestEnv);
-    const historyKey = `conv:model:${guildId}:${message.channel_id}:u${message.author.id}`;
+    const historyKey = await userHistoryKey(
+      this.env,
+      `conv:model:${guildId}:${message.channel_id}:u${message.author.id}`,
+      message.author.id,
+    );
     const maxHistory = intVar(this.env.MAX_HISTORY_MESSAGES, 20);
     const history = await loadHistory(this.env, historyKey, maxHistory);
     const messages: ChatMessage[] = [
@@ -955,7 +966,11 @@ export class DiscordGateway extends DurableObject<Env> {
         for (const call of response.toolCalls) {
           await stream?.setStatus(`Using ${call.function.name}…`);
           const scope = `guilds/${guildId}`;
-          const result = await executeTool(requestEnv, scope, call);
+          const ghAuth = await getGithubAuth(requestEnv, message.author.id)
+            .catch(() => null);
+          const result = await executeTool(requestEnv, scope, call, {
+            ghToken: ghAuth?.token ?? null,
+          });
           toolResults.push(result);
           try {
             const parsed = JSON.parse(result) as { pending_attachment?: string };

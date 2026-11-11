@@ -1,4 +1,5 @@
 import type { Env } from "./env";
+import { encryptText, decryptText } from "./crypto";
 import type { Interaction } from "./discord/types";
 
 export interface StoredMessage {
@@ -32,7 +33,15 @@ export async function loadHistory(
   try {
     const raw = await env.CONVERSATIONS.get(key);
     if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
+    // Values are AES-GCM encrypted at rest. A plaintext legacy value is
+    // accepted once and re-encrypted on the next save.
+    let text = raw;
+    try {
+      text = await decryptText(env, raw);
+    } catch {
+      text = raw;
+    }
+    const parsed = JSON.parse(text) as unknown;
     if (!Array.isArray(parsed)) return [];
 
     const history = parsed.filter(
@@ -61,7 +70,7 @@ export async function saveHistory(
     content: message.content.slice(0, MAX_STORED_MESSAGE_CHARS),
   }));
 
-  await env.CONVERSATIONS.put(key, JSON.stringify(trimmed), {
+  await env.CONVERSATIONS.put(key, await encryptText(env, JSON.stringify(trimmed)), {
     expirationTtl: HISTORY_TTL_SECONDS,
   });
 }

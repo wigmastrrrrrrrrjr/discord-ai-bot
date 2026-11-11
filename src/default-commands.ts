@@ -18,6 +18,15 @@ import {
   latestTokenForUser,
   sendAgentDm,
 } from "./agent-relay";
+import {
+  clearGithubAuth,
+  fetchGithubLogin,
+  getGithubAuth,
+  migrateUserHistory,
+  pollDeviceFlow,
+  saveGithubAuth,
+  startDeviceFlow,
+} from "./github-auth";
 
 interface SubCommandOption {
   name: string;
@@ -54,6 +63,16 @@ export const DEFAULT_COMMANDS: CommandDefinition[] = [
       { type: 1, name: "status", description: "Show agent mode and memory state." },
       { type: 1, name: "compact", description: "Compact the agent memory now." },
       { type: 1, name: "relay", description: "Generate a one-time code that the agentrelay Python app uses to bind your device." },
+    ],
+  },
+  {
+    name: "github",
+    description: "Connect your GitHub account so the agent's terminal runs commands as you.",
+    options: [
+      { type: 1, name: "login", description: "Start linking — you'll get a one-time code for github.com/login/device." },
+      { type: 1, name: "finish", description: "Finish linking after entering your code." },
+      { type: 1, name: "status", description: "Show which GitHub account is linked." },
+      { type: 1, name: "logout", description: "Unlink your GitHub account and wipe the token." },
     ],
   },
   { name: "help", description: "Show this bot's built-in commands." },
@@ -257,13 +276,165 @@ async function manageResponse(env: Env, interaction: Interaction, request: Reque
   }
 }
 
-export async function runDefaultCommand(env: Env, interaction: Interaction, request: Request): Promise<Response> {
+
+function interactionUser(interaction: Interaction): { id: string; name: string } {
+  const user = interaction.member?.user ?? interaction.user;
+  return {
+    id: user?.id ?? "",
+    name: user?.global_name ?? user?.username ?? "user",
+  };
+}
+
+async function editInteractionOriginal(
+  env: Env,
+  interaction: Interaction,
+  content: string,
+): Promise<void> {
+  const appId = env.DISCORD_CLIENT_ID;
+  const token = interaction.token;
+  if (!appId || !token) return;
+  await botApi(
+    env,
+    `/webhooks/${encodeURIComponent(appId)}/${encodeURIComponent(token)}/messages/@original`,
+    { method: "PATCH", body: JSON.stringify({ content }) },
+  ).catch(() => undefined);
+}
+
+const DEVICE_FLOW_URL = "https://github.com/login/device";
+const FLOW_TTL_MS = 15 * 60 * 1000;
+
+function githubFlowKey(userId: string): string {
+  return `github-flow:${userId}`;
+}
+
+async function storePendingFlow(
+  env: Env,
+  userId: string,
+  deviceCode: string,
+): Promise<void> {
+  await env.CONVERSATIONS.put(githubFlowKey(userId), deviceCode, {
+    expirationTtl: 900,
+  });
+}
+
+async function takePendingFlow(
+  env: Env,
+  userId: string,
+): Promise<string | null> {
+  const value = await env.CONVERSATIONS.get(githubFlowKey(userId));
+  if (!value) return null;
+  await env.CONVERSATIONS.delete(githubFlowKey(userId));
+  return value;
+}
+
+async function finishGithubLink(
+  env: Env,
+  interaction: Interaction,
+  deviceCode: string,
+): Promise<void> {
+  const user = interactionUser(interaction);
+  const result = await pollDeviceFlow(deviceCode).catch(() => null);
+  if (!result || result.status === "pending") {
+    await editInteractionOriginal(
+      env,
+      interaction,
+      "GitHub linking is not complete yet. Enter the code at " + DEVICE_FLOW_URL + " and run `/github finish` again.",
+    );
+    return;
+  }
+  if (result.status !== "done") {
+    await editInteractionOriginal(
+      env,
+      interaction,
+      "The link code expired. Run `/github login` to get a fresh one.",
+    );
+    return;
+  }
+  const login = (await fetchGithubLogin(result.token).catch(() => null)) ?? "github";
+  await saveGithubAuth(env, user.id, result.token, login);
+  const moved = await migrateUserHistory(env, user.id).catch(() => 0);
+  await editInteractionOriginal(
+    env,
+    interaction,
+    `GitHub linked as **${login}** (${user.name}).\n\n` +
+      (moved > 0
+        ? `Your past conversation history (${moved} session${moved === 1 ? "" : "s"}) was moved into a new encrypted history that only you can reach.\n`
+        : "") +
+      `In the agent terminal your GitHub identity is injected fresh per command — it never lives in a shared shell. Run \`gh auth status\` through the agent to try it.`,
+  );
+}
+
+// Device-flow token storage helper (kept local so the flow code stays readable).
+async function githubResponse(
+  env: Env,
+  interaction: Interaction,
+  ctx?: ExecutionContext,
+): Promise<Response> {
+  const user = interactionUser(interaction);
+  if (!user.id) return ephemeral("Could not identify you.");
+  const sub = (interaction.data?.options as Array<{ name?: string }> | undefined)?.[0]?.name?.toLowerCase() ?? "status";
+
+  if (sub === "status") {
+    const auth = await getGithubAuth(env, user.id).catch(() => null);
+    return ephemeral(
+      auth
+        ? `GitHub linked as **${auth.login}**. Your conversation history lives in your own encrypted namespace, and the agent terminal uses your GitHub identity.`
+        : "No GitHub account linked. Run `/github login` to connect one.",
+    );
+  }
+
+  if (sub === "logout") {
+    await clearGithubAuth(env, user.id).catch(() => undefined);
+    return ephemeral("GitHub unlinked. The stored token was deleted.");
+  }
+
+  if (sub === "finish") {
+    const deviceCode = await takePendingFlow(env, user.id).catch(() => null);
+    if (!deviceCode) {
+      return ephemeral("No pending link. Run `/github login` first.");
+    }
+    if (ctx) {
+      ctx.waitUntil(
+        finishGithubLink(env, interaction, deviceCode).catch(() => undefined),
+      );
+      return ephemeral("Checking GitHub… this message will update in a moment.");
+    }
+    const result = await pollDeviceFlow(deviceCode).catch(() => null);
+    if (!result || result.status !== "done") {
+      return ephemeral("Link not complete yet. Enter your code at " + DEVICE_FLOW_URL + ", then run `/github finish` again.");
+    }
+    const login = (await fetchGithubLogin(result.token).catch(() => null)) ?? "github";
+    await saveGithubAuth(env, user.id, result.token, login);
+    const moved = await migrateUserHistory(env, user.id).catch(() => 0);
+    return ephemeral(
+      `GitHub linked as **${login}**.` +
+        (moved > 0 ? ` Moved ${moved} conversation session${moved === 1 ? "" : "s"} into your new encrypted history.` : ""),
+    );
+  }
+
+  // login
+  const flow = await startDeviceFlow().catch(() => null);
+  if (!flow) {
+    return ephemeral("Could not reach GitHub to start linking. Try again shortly.");
+  }
+  await storePendingFlow(env, user.id, flow.deviceCode).catch(() => undefined);
+  return ephemeral(
+    `Linking your GitHub — this runs in its own isolated flow, never inside a shared terminal session.\n\n` +
+      `1. Open ${DEVICE_FLOW_URL}\n` +
+      `2. Enter this one-time code: **${flow.userCode}**\n` +
+      `3. Run \`/github finish\` here to complete the link.\n\n` +
+      `The code expires in about 15 minutes. Your token is stored encrypted and only used for commands you ask the agent to run.`,
+  );
+}
+
+export async function runDefaultCommand(env: Env, interaction: Interaction, request: Request, ctx?: ExecutionContext): Promise<Response> {
   const name = interaction.data?.name?.toLowerCase() ?? "";
   if (name === "help") return helpResponse(interaction);
   if (name === "manage") return manageResponse(env, interaction, request);
   if (name === "models") return modelsResponse(env, interaction);
   if (name === "agent") return agentResponse(env, interaction, request);
   if (name === "v2") return v2Response(env, interaction);
+  if (name === "github") return githubResponse(env, interaction, ctx);
   return ephemeral("Unknown command. Custom commands are disabled.");
 }
 

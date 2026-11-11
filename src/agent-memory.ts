@@ -1,4 +1,5 @@
 import type { Env } from "./env";
+import { encryptText, decryptText } from "./crypto";
 import { DEFAULT_SYSTEM_PROMPT } from "./env";
 import { completeWithFallback } from "./ai/router";
 
@@ -50,7 +51,13 @@ export async function getAgentState(
     .bind(userId)
     .first<{ enabled: number; memory: string }>();
   if (!row) return { enabled: false, memory: "" };
-  return { enabled: Boolean(row.enabled), memory: row.memory ?? "" };
+  let memory = row.memory ?? "";
+  try {
+    memory = await decryptText(env, memory);
+  } catch {
+    // plaintext legacy value — re-encrypted on next write
+  }
+  return { enabled: Boolean(row.enabled), memory };
 }
 
 export async function setAgentEnabled(
@@ -83,9 +90,12 @@ export async function agentMemoryAppend(
     `UPDATE agent_state SET memory = ?, updated_at = ? WHERE user_id = ?`,
   )
     .bind(
-      memory.length <= DEFAULT_MEMORY_CHAR_LIMIT * 2
-        ? memory
-        : memory.slice(0, DEFAULT_MEMORY_CHAR_LIMIT * 2),
+      await encryptText(
+        env,
+        memory.length <= DEFAULT_MEMORY_CHAR_LIMIT * 2
+          ? memory
+          : memory.slice(0, DEFAULT_MEMORY_CHAR_LIMIT * 2),
+      ),
       Date.now(),
       userId,
     )
@@ -118,7 +128,7 @@ export async function compactAgentMemory(
   await env.DB.prepare(
     `UPDATE agent_state SET memory = ?, updated_at = ? WHERE user_id = ?`,
   )
-    .bind(digest, Date.now(), userId)
+    .bind(await encryptText(env, digest), Date.now(), userId)
     .run();
   return { digest, before, after: digest.length };
 }
@@ -145,7 +155,7 @@ export async function agentMemoryWrite(
   await env.DB.prepare(
     `UPDATE agent_state SET memory = ?, updated_at = ? WHERE user_id = ?`,
   )
-    .bind(content.slice(0, 200000), Date.now(), userId)
+    .bind(await encryptText(env, content.slice(0, 200000)), Date.now(), userId)
     .run();
 }
 

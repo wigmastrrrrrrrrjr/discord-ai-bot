@@ -458,10 +458,15 @@ function truncate(value: string, limit = MAX_TOOL_OUTPUT_CHARS): {
   };
 }
 
+export interface ToolAuth {
+  ghToken?: string | null;
+}
+
 export async function executeTool(
   env: Env,
   scope: string,
   call: ToolCall,
+  auth?: ToolAuth,
 ): Promise<string> {
   const allowed = new Set(toolsFor(env).map((tool) => tool.function.name));
   if (!allowed.has(call.function.name)) {
@@ -489,7 +494,12 @@ export async function executeTool(
         }
         const timeout =
           typeof args.timeout === "number" ? args.timeout : undefined;
-        const result = await sandboxExec(env, command, timeout);
+        // A linked user's GitHub token is injected fresh per command —
+        // it is never written into the shared sandbox shell.
+        const ghPrefix = auth?.ghToken
+          ? `export GH_TOKEN=${JSON.stringify(auth.ghToken).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}\n`
+          : "";
+        const result = await sandboxExec(env, ghPrefix + command, timeout);
         const output = truncate(result.output ?? "");
         return JSON.stringify({
           output: output.value,
