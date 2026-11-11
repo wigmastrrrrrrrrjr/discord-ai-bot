@@ -7,9 +7,11 @@ export const WEB_AGENT_HTML = `<!doctype html>
 <style>
   :root { --bg:#0b0f14; --panel:#121821; --line:#1f2937; --text:#e5edf5; --dim:#8ea0b3; --accent:#4f8cff; --bad:#ff5470; }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; height:100vh; overflow:hidden; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; height:100dvh; overflow:hidden; }
   a { color:var(--accent); }
-  .app { display:flex; height:100vh; }
+  .app { display:flex; height:100dvh; }
+  @media (max-width:700px) { .side { width:56px; padding:10px 8px; } .side h1 { display:none; } .sess span:first-child { display:none; } .sess { justify-content:center; } .me .who { display:none; } .me { justify-content:center; } .me a { display:none; } }
   .side { width:260px; background:var(--panel); border-right:1px solid var(--line); display:flex; flex-direction:column; padding:12px; gap:8px; }
   .side h1 { font-size:15px; margin:4px 4px 10px; }
   .newchat { background:var(--accent); border:0; color:#fff; padding:9px 12px; border-radius:8px; font-size:14px; cursor:pointer; }
@@ -24,7 +26,7 @@ export const WEB_AGENT_HTML = `<!doctype html>
   .me .who { font-size:12px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .main { flex:1; display:flex; flex-direction:column; }
   .chat { flex:1; overflow-y:auto; padding:24px 18vw 24px; display:flex; flex-direction:column; gap:14px; }
-  @media (max-width:900px){ .chat{padding:18px 14px;} .side{width:200px;} }
+  @media (max-width:900px){ .chat{padding:18px 14px;} .composer{padding:12px 14px;} }
   .msg { max-width:760px; white-space:pre-wrap; word-wrap:break-word; }
   .msg.user { align-self:flex-end; background:#1c2a42; padding:10px 14px; border-radius:14px 14px 4px 14px; }
   .msg.bot { align-self:flex-start; }
@@ -38,7 +40,7 @@ export const WEB_AGENT_HTML = `<!doctype html>
   .btn-oauth svg { width:18px; height:18px; flex:none; }
   .composer { border-top:1px solid var(--line); padding:14px 18vw; display:flex; gap:10px; }
   @media (max-width:900px){ .composer{padding:12px 14px;} }
-  .composer textarea { flex:1; background:#0e141d; color:var(--text); border:1px solid var(--line); border-radius:10px; padding:11px 12px; font:inherit; resize:none; min-height:44px; max-height:160px; }
+  .composer textarea { flex:1; background:#0e141d; color:var(--text); border:1px solid var(--line); border-radius:10px; padding:11px 12px; font:16px/1.5 inherit; font-family:inherit; resize:none; min-height:44px; max-height:160px; overflow-y:auto; }
   .composer button { background:var(--accent); border:0; color:#fff; border-radius:10px; padding:0 18px; cursor:pointer; font-size:15px; }
   .composer button:disabled { opacity:.45; cursor:default; }
   .status { font-size:11px; color:var(--dim); min-height:16px; }
@@ -153,6 +155,8 @@ export const WEB_AGENT_HTML = `<!doctype html>
     var composer = el('div', 'composer');
     var ta = document.createElement('textarea');
     ta.id = 'prompt'; ta.placeholder = 'Message the agent…'; ta.rows = 1;
+    var grow = function () { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'; };
+    ta.addEventListener('input', grow);
     ta.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
     });
@@ -253,6 +257,7 @@ export const WEB_AGENT_HTML = `<!doctype html>
     state.busy = true;
     byId('send').disabled = true;
     ta.value = '';
+    ta.style.height = 'auto';
     state.messages.push({ role: 'user', content: text, at: Date.now() });
     state.messages.push({ role: 'assistant', content: '', at: Date.now() });
     var botIdx = state.messages.length - 1;
