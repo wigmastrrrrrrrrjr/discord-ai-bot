@@ -774,6 +774,7 @@ export class DiscordGateway extends DurableObject<Env> {
         const run = await runOpencodeAgent(this.env, {
           sessionKey: `guild-${message.guild_id ?? "dm"}-${message.channel_id}-${message.author.id}`,
           prompt: v2Prompt,
+          onDelta: (text) => stream?.delta(text),
         });
         if (!run.ok) {
           await stream?.setStatus(`V2 failed: ${run.error ?? "unknown"} — falling back to V1`);
@@ -1123,6 +1124,7 @@ export class DiscordGateway extends DurableObject<Env> {
         const run = await runOpencodeAgent(this.env, {
           sessionKey: `agent-dm-${userId}`,
           prompt: `${memoryNote}\n\nUser: ${content}`,
+          onDelta: (text) => stream?.delta(text),
         });
         if (!run.ok) {
           await stream?.setStatus(`V2 failed: ${run.error ?? "unknown"} — falling back to V1`);

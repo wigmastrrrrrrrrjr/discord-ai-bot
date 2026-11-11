@@ -3593,14 +3593,21 @@ async function handleWebAgentApi(
             sessionKey: `web-${identity.id}-${sessionId}`,
             prompt,
             timeoutSeconds: 10,
+            onDelta: async (text) => {
+              await sendEvent("delta", { text });
+              await setJob({ status: "running", activity: "writing…" });
+            },
+            onModel: async (model) => {
+              const short = model.replace(/^opencode\//, "");
+              await sendEvent("status", { status: `agent v2 · ${short}` });
+              await setJob({ status: "running", activity: `agent v2 · ${short}` });
+            },
           });
           if (run.ok) {
-            // Stream the finished reply out in chunks so the UI types it.
+            // Deltas already streamed live; just finish up.
             const reply = run.output;
-            const chunkSize = 220;
-            for (let i = 0; i < reply.length; i += chunkSize) {
-              await sendEvent("delta", { text: reply.slice(i, i + chunkSize) });
-            }
+            await setJob({ status: "running", activity: "writing…" });
+            await sendEvent("delta", { text: "" });
             session!.messages.push({ role: "assistant", content: reply, at: Date.now() });
             session!.updatedAt = Date.now();
             await saveWebAgentSession(env, identity.id, session!);

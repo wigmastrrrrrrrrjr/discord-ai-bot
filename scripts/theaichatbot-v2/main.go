@@ -17,8 +17,10 @@ package main
 //	POST /opencode/run {prompt, session} - run the opencode agent (V2)
 //	POST /v2/file {path, content}
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"sync"
 	"fmt"
 	"log"
 	"net/http"
@@ -344,15 +346,47 @@ func handleOpencodeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	cmdEnv := append(filteredEnv, "TMPDIR="+opencodeTmpDir)
 
+	// NDJSON streaming: chunk records {"t": "..."} then a final done record.
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-store")
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush()
+	}
+	var mu sync.Mutex
+	streaming := true
+	emit := func(t string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !streaming {
+			return
+		}
+		rec, _ := json.Marshal(map[string]string{"t": t})
+		w.Write(append(rec, '\n'))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	finish := func(payload map[string]any) {
+		mu.Lock()
+		streaming = false
+		mu.Unlock()
+		rec, _ := json.Marshal(payload)
+		w.Write(append(rec, '\n'))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+
 	// Try the primary model; on upstream/model-level errors fall back.
+	// Output is buffered for a short grace window so fast model-level
+	// failures retry silently instead of leaking errors to the client.
 	modelsToTry := []string{opencodeModel}
 	if opencodeFallback != "" && opencodeFallback != opencodeModel {
 		modelsToTry = append(modelsToTry, opencodeFallback)
 	}
-	var out []byte
-	var err error
-	usedModel := opencodeModel
 	started := time.Now()
+	usedModel := opencodeModel
 	for _, model := range modelsToTry {
 		args := []string{"run", "-m", model}
 		if hasSession {
@@ -363,30 +397,86 @@ func handleOpencodeRun(w http.ResponseWriter, r *http.Request) {
 		cmd := exec.CommandContext(ctx, "opencode", args...)
 		cmd.Dir = dir
 		cmd.Env = cmdEnv
-		out, err = cmd.CombinedOutput()
-		cancel()
-		usedModel = model
-		text := string(out)
-		bad := err != nil && (strings.Contains(text, "Upstream request failed") ||
-			strings.Contains(text, "Unexpected server error") ||
-			strings.Contains(text, "invalid_request_error") ||
-			strings.Contains(text, "Model access is disabled"))
-		if !bad {
-			break
+
+		var aw attemptWriter
+		aw.emit = emit
+		cmd.Stdout = &aw
+		cmd.Stderr = &aw
+
+		if err := cmd.Start(); err != nil {
+			cancel()
+			emit("opencode failed to start: " + err.Error())
+			finish(map[string]any{"output": "", "error": err.Error(), "model": model})
+			return
 		}
+		usedModel = model
+
+		// Grace window: enable live streaming if nothing failed yet.
+		timer := time.AfterFunc(10*time.Second, func() {
+			aw.enable()
+		})
+		runErr := cmd.Wait()
+		timer.Stop()
+		cancel()
+		aw.enable() // flush any remaining buffered text once finished
+
+		if aw.bad && model != modelsToTry[len(modelsToTry)-1] {
+			emit("") // separator between failed attempts
+			continue
+		}
+		finish(map[string]any{
+			"output":   "",
+			"seconds":  time.Since(started).Seconds(),
+			"session":  filepath.Base(dir),
+			"model":    usedModel,
+			"exit_err": errString(runErr),
+			"done":     true,
+		})
+		return
 	}
-	elapsed := time.Since(started).Seconds()
-	text := string(out)
-	if err != nil && text == "" {
-		text = "opencode failed: " + err.Error()
+}
+
+// attemptWriter buffers opencode output, only letting it stream to the
+// client once the grace window passes without a model-level failure.
+type attemptWriter struct {
+	mu   sync.Mutex
+	buf  bytes.Buffer
+	bad  bool
+	emit func(string)
+	live bool
+}
+
+func badLine(s string) bool {
+	return strings.Contains(s, "Upstream request failed") ||
+		strings.Contains(s, "Unexpected server error") ||
+		strings.Contains(s, "invalid_request_error") ||
+		strings.Contains(s, "Model access is disabled")
+}
+
+func (a *attemptWriter) Write(p []byte) (int, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.buf.Write(p)
+	s := string(p)
+	if badLine(s) {
+		a.bad = true
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"output":   text,
-		"seconds":  elapsed,
-		"session":  filepath.Base(dir),
-		"model":    usedModel,
-		"exit_err": errString(err),
-	})
+	if a.live && !a.bad && a.emit != nil {
+		a.emit(s)
+	}
+	return len(p), nil
+}
+
+func (a *attemptWriter) enable() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.live || a.bad {
+		return
+	}
+	a.live = true
+	if a.emit != nil && a.buf.Len() > 0 {
+		a.emit(a.buf.String())
+	}
 }
 
 func errString(err error) string {
