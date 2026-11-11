@@ -81,7 +81,6 @@ export const WEB_AGENT_HTML = `<!doctype html>
     box.appendChild(el('p', null, message || 'Sign in to start. Every chat is saved and encrypted.'));
     var oauth = el('div', 'oauth');
 
-    var g = el('a', 'btn-oauth'); g.href = '/auth/google'; g.appendChild(svg(GOOGLE_ICON)); g.appendChild(document.createTextNode('Log in with Google')); oauth.appendChild(g);
     var d = el('a', 'btn-oauth'); d.href = '/auth/discord?next=' + encodeURIComponent('/agent'); d.appendChild(svg(DISCORD_ICON)); d.appendChild(document.createTextNode('Log in with Discord')); oauth.appendChild(d);
 
     box.appendChild(oauth);
