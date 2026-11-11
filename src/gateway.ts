@@ -15,6 +15,7 @@ import {
   reactToMessage,
   sendChannelMessage,
   type IdentityWebhook,
+  sendChannelAttachment,
   type OutgoingFile,
 } from "./discord/rest";
 import {
@@ -755,8 +756,11 @@ export class DiscordGateway extends DurableObject<Env> {
       const attachmentInfo = await this.storeAttachments(message, scope);
       const history = await loadHistory(this.env, historyKey, maxHistory);
       const identity = await this.identityFor(message, config);
-      stream = new ChannelStream(this.env, message.channel_id, identity);
-      await stream.start();
+      // Bot-to-bot replies never stream: one final message, no live edits.
+      if (!enabledBot) {
+        stream = new ChannelStream(this.env, message.channel_id, identity);
+        await stream.start();
+      }
 
       const result = await runAgent(this.env, {
         scope,
@@ -797,7 +801,21 @@ export class DiscordGateway extends DurableObject<Env> {
             ? `guilds/${message.guild_id}`
             : scope)
         : [];
-      await stream.finish(result.text + footer, generatedFiles);
+      if (stream) {
+        await stream.finish(result.text + footer, generatedFiles);
+      } else {
+        const reply = `${result.text}${footer}`;
+        if (generatedFiles.length) {
+          await sendChannelAttachment(
+            this.env,
+            message.channel_id,
+            reply,
+            generatedFiles,
+          );
+        } else {
+          await sendChannelMessage(this.env, message.channel_id, reply);
+        }
+      }
       await this.clearError();
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
