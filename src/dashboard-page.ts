@@ -597,6 +597,25 @@ export const DASHBOARD_HTML = `<!doctype html>
         <button id="postUpdate" class="btn btn-small" type="button">Push announcement</button>
         <span id="updatePostStatus" class="status"></span>
       </div>
+    
+      <div class="section-header" style="margin-top:16px">
+        <div>
+          <h3>Usage restrictions (creator only)</h3>
+          <p class="hint">Autonomous ToS bans. Only the bot creator can lift them.</p>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="loadBans" class="btn btn-small" type="button">Refresh ban list</button>
+        <span id="bansStatus" class="status"></span>
+      </div>
+      <pre id="bansList" class="mono" style="font-size:12px;white-space:pre-wrap;max-height:220px;overflow:auto"></pre>
+      <label>Unban user
+        <input id="unbanUserId" type="text" placeholder="Discord user ID" inputmode="numeric">
+      </label>
+      <div class="actions">
+        <button id="unbanBtn" class="btn btn-small" type="button">Unban</button>
+        <span id="unbanStatus" class="status"></span>
+      </div>
     </section>
 
     <section class="card" data-tab="gateway">
@@ -1979,6 +1998,45 @@ export const DASHBOARD_HTML = `<!doctype html>
     } catch {
       set('updatesLast', '');
     }
+    loadBans();
+  }
+
+  // ---- Creator-only ToS ban management ----
+
+  async function loadBans() {
+    status('bansStatus', 'Loading…');
+    try {
+      var data = await api('/api/moderation/bans');
+      var bans = data.bans || [];
+      if (!bans.length) {
+        set('bansList', 'No active restrictions.');
+      } else {
+        set('bansList', bans.map(function (b) {
+          return b.user_id + (b.until ? ' — until ' + b.until : ' — PERMANENT') +
+            '\\n  ' + (b.reason || '(no reason)') + '  [' + b.created_at + ']';
+        }).join('\\n'));
+      }
+      status('bansStatus', bans.length + ' active.', 'ok');
+    } catch (error) {
+      status('bansStatus', error.message, 'bad');
+      set('bansList', '');
+    }
+  }
+
+  async function runUnban() {
+    var userId = String(byId('unbanUserId') ? byId('unbanUserId').value : '').trim();
+    if (!userId) { status('unbanStatus', 'Enter a user ID first.', 'bad'); return; }
+    status('unbanStatus', 'Unbanning…');
+    try {
+      var data = await api('/api/moderation/unban', {
+        method: 'POST',
+        body: JSON.stringify({ userId: userId })
+      });
+      status('unbanStatus', data.removed ? 'Unbanned.' : 'No such ban.', data.removed ? 'ok' : 'bad');
+      if (data.removed) { set('unbanUserId', ''); loadBans(); }
+    } catch (error) {
+      status('unbanStatus', error.message, 'bad');
+    }
   }
 
   async function saveUpdatesOptIn() {
@@ -2154,6 +2212,8 @@ export const DASHBOARD_HTML = `<!doctype html>
   on('clearLog', 'click', clearActivityLog);
   on('updatesOptIn', 'change', saveUpdatesOptIn);
   on('postUpdate', 'click', postBotUpdate);
+  on('loadBans', 'click', loadBans);
+  on('unbanBtn', 'click', runUnban);
 
   on('navToggle', 'click', openDrawer);
   on('navClose', 'click', closeDrawer);

@@ -157,3 +157,26 @@ export async function enforceTos(
   if (!verdict) return null;
   return recordStrike(env, userId, verdict);
 }
+
+export async function listUserBans(
+  env: Env,
+): Promise<Array<{ user_id: string; reason: string; until: string | null; created_at: string }>> {
+  const result = await env.DB.prepare(
+    "SELECT user_id, reason, until, created_at FROM user_bans ORDER BY created_at DESC LIMIT 200",
+  ).all<{ user_id: string; reason: string; until: string | null; created_at: string }>();
+  return (result.results ?? []).map((r) => ({
+    user_id: r.user_id,
+    reason: r.reason,
+    until: r.until,
+    created_at: r.created_at,
+  }));
+}
+
+export async function unbanUser(env: Env, userId: string): Promise<boolean> {
+  const result = await env.DB.prepare("DELETE FROM user_bans WHERE user_id = ?")
+    .bind(userId)
+    .run();
+  await env.CONVERSATIONS.delete(strikeCountKey(userId)).catch(() => undefined);
+  await logEvent(env, "", "tos-moderation", `Unbanned ${userId} by the creator.`);
+  return (result.meta.changes ?? 0) > 0;
+}

@@ -6,6 +6,7 @@ import {
   sendChannelMessage,
 } from "./discord/rest";
 import { readManageToken } from "./manage-token";
+import { listUserBans, unbanUser } from "./tos-moderation";
 import {
   DiscordRestError,
   botApi,
@@ -444,6 +445,33 @@ export async function handleDashboard(
   if (url.pathname === "/api/mrouter/probe") {
     if (request.method === "GET") return apiMrouterProbeList(env, request);
     if (request.method === "POST") return apiMrouterProbeRun(env, request);
+  }
+
+  if (url.pathname === "/api/moderation/bans" && request.method === "GET") {
+    const auth = await requireSession(env, request);
+    if (auth instanceof Response) return auth;
+    if (auth.session.userId !== (env.BOT_OWNER_ID ?? "")) {
+      return apiError("Only the bot creator can manage bans", 403);
+    }
+    return jsonResponse({ bans: await listUserBans(env) });
+  }
+
+  if (url.pathname === "/api/moderation/unban" && request.method === "POST") {
+    const auth = await requireSession(env, request);
+    if (auth instanceof Response) return auth;
+    if (auth.session.userId !== (env.BOT_OWNER_ID ?? "")) {
+      return apiError("Only the bot creator can unban users", 403);
+    }
+    let body: { userId?: unknown };
+    try {
+      body = (await request.json()) as typeof body;
+    } catch {
+      return apiError("Invalid JSON");
+    }
+    const userId = typeof body.userId === "string" ? body.userId.trim() : "";
+    if (!/^\d{5,25}$/.test(userId)) return apiError("Invalid user id");
+    const removed = await unbanUser(env, userId);
+    return jsonResponse({ removed });
   }
 
   if (url.pathname === "/api/bot/update") {

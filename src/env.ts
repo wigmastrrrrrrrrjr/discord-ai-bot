@@ -42,6 +42,7 @@ export interface Env {
   ALLOW_OPENCODE_AGENT?: string;
   AGENT_MEMORY_MAX_CHARS?: string;
   V2_AGENT_URL?: string;
+  BOT_OWNER_ID?: string;
   V2_AGENT_TOKEN?: string;
   BOT_UPDATE_TOKEN?: string;
   MRROUTER_API_KEY?: string;
