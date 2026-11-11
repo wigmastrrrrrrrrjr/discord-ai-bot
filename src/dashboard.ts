@@ -383,6 +383,47 @@ export async function handleDashboard(
     return apiServerLog(env, request, url);
   }
 
+  if (url.pathname === "/api/debug/cooldowns" && env.BOT_UPDATE_TOKEN && request.headers.get("x-update-token") === env.BOT_UPDATE_TOKEN) {
+    const keys = await env.CONVERSATIONS.list({ prefix: "provider-cooldown:" });
+    if (request.method === "POST") {
+      for (const key of keys.keys) await env.CONVERSATIONS.delete(key.name);
+      return jsonResponse({ cleared: keys.keys.map((k) => k.name) });
+    }
+    const states: Record<string, string> = {};
+    for (const key of keys.keys) {
+      states[key.name.replace("provider-cooldown:", "")] =
+        (await env.CONVERSATIONS.get(key.name)) ?? "";
+    }
+    return jsonResponse(states);
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/debug/complete" && env.BOT_UPDATE_TOKEN && request.headers.get("x-update-token") === env.BOT_UPDATE_TOKEN) {
+    let body: { prompt?: unknown } = {};
+    try { body = (await request.json()) as typeof body; } catch { return apiError("Invalid JSON"); }
+    const prompt = typeof body.prompt === "string" && body.prompt.trim() ? body.prompt : "Reply with the single word OK.";
+    const started = Date.now();
+    try {
+      const response = await completeWithFallback(env, {
+        messages: [{ role: "user", content: prompt }],
+        maxTokens: 60,
+        temperature: 0,
+      });
+      return jsonResponse({
+        ok: true,
+        provider: response.provider,
+        model: response.model,
+        ms: Date.now() - started,
+        content: response.content.slice(0, 300),
+      });
+    } catch (error) {
+      return jsonResponse({
+        ok: false,
+        ms: Date.now() - started,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   if (request.method === "POST" && url.pathname === "/api/debug/tool") {
     const token = request.headers.get("x-update-token") ?? "";
     const expectedToken = env.BOT_UPDATE_TOKEN ?? "";
@@ -535,7 +576,15 @@ export async function handleDashboard(
     const { getWebIdentity } = await import("./web-agent-auth");
     const identity = await getWebIdentity(env, request);
     if (!identity) return apiError("Not logged in", 401);
-    return handleWebAgentApi(env, request, url, identity, ctx);
+    try {
+      return await handleWebAgentApi(env, request, url, identity, ctx);
+    } catch (error) {
+      console.error("Web agent API failed", error);
+      return apiError(
+        `web agent: ${error instanceof Error ? error.message : String(error)}`,
+        500,
+      );
+    }
   }
   if (request.method === "POST" && url.pathname === "/api/agent/test") {
     return apiAgentTest(env, request, url);

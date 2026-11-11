@@ -109,7 +109,7 @@ export const WEB_AGENT_HTML = `<!doctype html>
     var res = await fetch(path, Object.assign({ credentials: 'same-origin' }, options || {}));
     var data = null;
     try { data = await res.json(); } catch (e) { data = {}; }
-    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status + (res.statusText ? ' ' + res.statusText : '')));
     return data;
   }
 
@@ -436,7 +436,7 @@ export const WEB_AGENT_HTML = `<!doctype html>
       });
       if (!res.ok) {
         var errData = {}; try { errData = await res.json(); } catch (e) {}
-        throw new Error(errData.error || ('HTTP ' + res.status));
+        throw new Error(errData.error || ('HTTP ' + res.status + (res.statusText ? ' ' + res.statusText : '')));
       }
       if (dataLooksJson(res)) {
         // fallback (no ctx streaming) — poll the job

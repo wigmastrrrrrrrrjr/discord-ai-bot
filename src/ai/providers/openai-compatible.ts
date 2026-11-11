@@ -366,11 +366,20 @@ export const openRouterProvider = createOpenAiCompatibleProvider({
   getConfig: (env) => ({
     apiKey: env.OPENROUTER_API_KEY ?? "",
     baseUrl: "https://openrouter.ai/api/v1",
-    model: env.OPENROUTER_MODEL || "google/gemini-2.5-flash-image-preview:free",
+    model: env.OPENROUTER_MODEL || "openrouter/free",
     headers: {
       "X-Title": "Discord AI Bot",
     },
   }),
+  // Free models only — this fallback account has no purchased credits,
+  // so paid candidates would always 402.
+  modelChain: [
+    "openrouter/free",
+    "baidu/ernie-5.5-flash-preview:free",
+    "nvidia/nemotron-3.5-super-vl:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "google/gemma-4-31b-it:free",
+  ],
 });
 
 export const ollamaProvider = createOpenAiCompatibleProvider({
@@ -379,7 +388,7 @@ export const ollamaProvider = createOpenAiCompatibleProvider({
   getConfig: (env) => ({
     apiKey: env.OLLAMA_API_KEY ?? "",
     baseUrl: env.OLLAMA_BASE_URL || "https://ollama.com",
-    model: env.OLLAMA_MODEL || "llama3.3:70b",
+    model: env.OLLAMA_MODEL || "glm-5.3-flash:cloud",
   }),
 });
 
