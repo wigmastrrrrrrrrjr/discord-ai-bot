@@ -379,6 +379,43 @@ const ALL_TOOLS: ToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "role_cosmetic",
+      description:
+        "Create or restyle a server role COSMETICALLY: you may set its name and a solid or gradient color. You cannot touch permissions, hoisting, mentionability, or moderation features. Use mode 'create' to make a new role, or 'set' to restyle an existing role you name. Gradient style uses a two-color blend; solid uses color1 only.",
+      parameters: {
+        type: "object",
+        properties: {
+          mode: {
+            type: "string",
+            enum: ["create", "set", "delete"],
+            description: "create a new cosmetic role, restyle an existing one, or delete one you created",
+          },
+          name: {
+            type: "string",
+            description: "Role name to create, restyle, or delete (required for all modes).",
+          },
+          color1: {
+            type: "string",
+            description: "Primary hex color, e.g. #FF5733 (required for create/set).",
+          },
+          color2: {
+            type: "string",
+            description: "Secondary hex color for a gradient, e.g. #33AAFF (optional).",
+          },
+          style: {
+            type: "string",
+            enum: ["solid", "gradient"],
+            description: "Default gradient when color2 is given, solid otherwise.",
+          },
+        },
+        required: ["mode", "name"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "generate_img",
       description:
         "Generate an image from a text description using AI. The finished picture is posted in the chat automatically as an attachment; you do not need to link it. Keep prompts as a single vivid sentence describing the whole scene. Default style is a fast photo/urt painterly render; pass style 'detailed' for the slower, higher-quality Stable Diffusion XL render.",
@@ -552,6 +589,105 @@ export async function executeTool(
         }
         const result = await sandboxServiceUrl(env, port);
         return JSON.stringify(result);
+      }
+
+      case "role_cosmetic": {
+        const mode = args.mode === "create" || args.mode === "set" || args.mode === "delete" ? args.mode : "";
+        const roleName = typeof args.name === "string" ? args.name.trim().slice(0, 100) : "";
+        if (!mode) return JSON.stringify({ error: "mode must be create, set, or delete" });
+        if (!roleName) return JSON.stringify({ error: "name is required" });
+
+        // scope is guilds/<id> in every place this tool is offered
+        const guildMatch = /^guilds\/(\d+)$/.exec(scope);
+        if (!guildMatch) {
+          return JSON.stringify({ error: "roles can only be managed inside a server" });
+        }
+        const guildId2 = guildMatch[1];
+
+        const parseHex = (value: unknown): number | null => {
+          if (typeof value !== "string") return null;
+          const m = /^#?([0-9a-fA-F]{6})$/.exec(value.trim());
+          if (!m) return null;
+          return parseInt(m[1], 16);
+        };
+        const c1 = parseHex(args.color1);
+        const c2 = parseHex(args.color2);
+        if (mode !== "delete" && c1 == null) {
+          return JSON.stringify({ error: "color1 must be a hex color like #FF5733" });
+        }
+        const wantGradient = mode !== "delete" && (args.style === "gradient" || (args.style !== "solid" && c2 != null));
+        if (wantGradient && c2 == null) {
+          return JSON.stringify({ error: "style gradient needs color2" });
+        }
+
+        const botToken = env.DISCORD_BOT_TOKEN ?? "";
+        const api = async (path: string, init?: RequestInit) =>
+          fetch(`https://discord.com/api/v10${path}`, {
+            ...init,
+            headers: {
+              authorization: `Bot ${botToken}`,
+              "content-type": "application/json",
+              ...(init?.headers ?? {}),
+            },
+          });
+
+        try {
+          if (mode === "delete") {
+            const list = await api(`/guilds/${guildId2}/roles`);
+            if (!list.ok) return JSON.stringify({ error: `could not list roles (HTTP ${list.status})` });
+            const roles = (await list.json()) as Array<{ id: string; name: string }>;
+            const target = roles.find(
+              (role) => role.name.toLowerCase() === roleName.toLowerCase(),
+            );
+            if (!target) return JSON.stringify({ error: `no role named "${roleName}"` });
+            const del = await api(`/guilds/${guildId2}/roles/${target.id}`, { method: "DELETE" });
+            if (!del.ok) return JSON.stringify({ error: `delete failed (HTTP ${del.status})` });
+            return JSON.stringify({ status: "deleted", role: roleName });
+          }
+
+          const list = await api(`/guilds/${guildId2}/roles`);
+          if (!list.ok) return JSON.stringify({ error: `could not list roles (HTTP ${list.status})` });
+          const roles = (await list.json()) as Array<{ id: string; name: string }>;
+          const existing = roles.find(
+            (role) => role.name.toLowerCase() === roleName.toLowerCase(),
+          );
+
+          // Strictly cosmetic: no permissions granted, never hoisted,
+          // never mentionable, no moderation flags.
+          const colors: Record<string, unknown> = { primary_color: c1 };
+          if (wantGradient) colors.secondary_color = c2;
+          if (wantGradient) colors.style = 1; // 1 = gradient, 0 = solid/brand
+
+          let roleResponse: Response;
+          if (existing) {
+            roleResponse = await api(`/guilds/${guildId2}/roles/${existing.id}`, {
+              method: "PATCH",
+              body: JSON.stringify({ name: roleName, colors, color: c1, permissions: "0", hoist: false, mentionable: false }),
+            });
+          } else {
+            if (mode === "set") {
+              return JSON.stringify({ error: `no role named "${roleName}" to restyle — use mode create to make it` });
+            }
+            roleResponse = await api(`/guilds/${guildId2}/roles`, {
+              method: "POST",
+              body: JSON.stringify({ name: roleName, colors, color: c1, permissions: "0", hoist: false, mentionable: false }),
+            });
+          }
+          if (!roleResponse.ok) {
+            const errText = await roleResponse.text().catch(() => "");
+            return JSON.stringify({ error: `role save failed (HTTP ${roleResponse.status}): ${errText.slice(0, 160)}` });
+          }
+          const role = (await roleResponse.json()) as { id: string; name: string };
+          return JSON.stringify({
+            status: existing ? "restyle" : "created",
+            role_id: role.id,
+            role_name: role.name,
+            look: wantGradient ? `gradient ${args.color1} → ${args.color2}` : `solid ${args.color1}`,
+            note: "Cosmetic only: the role grants zero permissions.",
+          });
+        } catch (error) {
+          return JSON.stringify({ error: error instanceof Error ? error.message : String(error) });
+        }
       }
 
       case "generate_img": {

@@ -30,7 +30,10 @@ import (
 )
 
 var (
-	opencodeModel  = envDefault("V2_OPENCODE_MODEL", "opencode/iceman-free")
+	opencodeModel = envDefault("V2_OPENCODE_MODEL", "opencode/iceman-free")
+	// Iceman is currently broken upstream (reasoning_display unsupported);
+	// fall back to this model when the primary errors out.
+	opencodeFallback = envDefault("V2_OPENCODE_FALLBACK", "opencode/nemotron-3.5-lightning-free")
 	opencodeRoot   = envDefault("V2_OPENCODE_ROOT", defaultOpencodeRoot())
 	opencodeTmpDir = envDefault("V2_OPENCODE_TMPDIR", "/home/coder/tmp")
 )
@@ -318,7 +321,6 @@ func handleOpencodeRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	args := []string{"run", "-m", opencodeModel}
 	// Continue the previous session so opencode keeps its own history.
 	ls, _ := os.ReadDir(dir)
 	hasSession := false
@@ -328,10 +330,6 @@ func handleOpencodeRun(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	if hasSession {
-		args = append(args, "--continue")
-	}
-	args = append(args, payload.Prompt)
 
 	timeout := time.Duration(payload.Timeout) * time.Second
 	if timeout <= 0 || timeout > 12*time.Minute {
@@ -345,13 +343,38 @@ func handleOpencodeRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	cmdEnv := append(filteredEnv, "TMPDIR="+opencodeTmpDir)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+
+	// Try the primary model; on upstream/model-level errors fall back.
+	modelsToTry := []string{opencodeModel}
+	if opencodeFallback != "" && opencodeFallback != opencodeModel {
+		modelsToTry = append(modelsToTry, opencodeFallback)
+	}
+	var out []byte
+	var err error
+	usedModel := opencodeModel
 	started := time.Now()
-	cmd := exec.CommandContext(ctx, "opencode", args...)
-	cmd.Dir = dir
-	cmd.Env = cmdEnv
-	out, err := cmd.CombinedOutput()
+	for _, model := range modelsToTry {
+		args := []string{"run", "-m", model}
+		if hasSession {
+			args = append(args, "--continue")
+		}
+		args = append(args, payload.Prompt)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		cmd := exec.CommandContext(ctx, "opencode", args...)
+		cmd.Dir = dir
+		cmd.Env = cmdEnv
+		out, err = cmd.CombinedOutput()
+		cancel()
+		usedModel = model
+		text := string(out)
+		bad := err != nil && (strings.Contains(text, "Upstream request failed") ||
+			strings.Contains(text, "Unexpected server error") ||
+			strings.Contains(text, "invalid_request_error") ||
+			strings.Contains(text, "Model access is disabled"))
+		if !bad {
+			break
+		}
+	}
 	elapsed := time.Since(started).Seconds()
 	text := string(out)
 	if err != nil && text == "" {
@@ -361,7 +384,7 @@ func handleOpencodeRun(w http.ResponseWriter, r *http.Request) {
 		"output":   text,
 		"seconds":  elapsed,
 		"session":  filepath.Base(dir),
-		"model":    opencodeModel,
+		"model":    usedModel,
 		"exit_err": errString(err),
 	})
 }
