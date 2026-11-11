@@ -537,22 +537,6 @@ export async function handleDashboard(
     if (!identity) return apiError("Not logged in", 401);
     return handleWebAgentApi(env, request, url, identity, ctx);
   }
-  if (url.pathname === "/api/web/agent/sessions" && request.method === "GET") {
-    const { getWebIdentity } = await import("./web-agent-auth");
-    const identity = await getWebIdentity(env, request);
-    if (!identity) return apiError("Not logged in", 401);
-    return jsonResponse({ sessions: await listWebAgentSessions(env, identity.id) });
-  }
-  if (url.pathname === "/api/web/agent/session" && request.method === "GET") {
-    const { getWebIdentity } = await import("./web-agent-auth");
-    const identity = await getWebIdentity(env, request);
-    if (!identity) return apiError("Not logged in", 401);
-    const sessionId = url.searchParams.get("id") ?? "";
-    const session = await loadWebAgentSession(env, identity.id, sessionId);
-    if (!session) return apiError("No such session", 404);
-    return jsonResponse({ session });
-  }
-
   if (request.method === "POST" && url.pathname === "/api/agent/test") {
     return apiAgentTest(env, request, url);
   }
@@ -3463,6 +3447,17 @@ async function handleWebAgentApi(
   }
 
   const pathname = url.pathname;
+
+  if (pathname === "/api/web/agent/sessions" && request.method === "GET") {
+    return jsonResponse({ sessions: await listWebAgentSessions(env, identity.id) });
+  }
+
+  if (pathname === "/api/web/agent/session" && request.method === "GET") {
+    const sessionIdGet = url.searchParams.get("id") ?? "";
+    const existing = await loadWebAgentSession(env, identity.id, sessionIdGet);
+    if (!existing) return apiError("No such session", 404);
+    return jsonResponse({ session: existing });
+  }
 
   if (pathname === "/api/web/agent/sessions" && request.method === "POST") {
     const title = typeof body.title === "string" ? body.title : "New chat";
