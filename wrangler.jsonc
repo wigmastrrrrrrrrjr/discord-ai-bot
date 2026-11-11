@@ -45,7 +45,6 @@
     "SANDBOX_TIMEOUT_MS": "60000",
     "BOT_OWNER_ID": "1536981526451982431",
     "AI_PROVIDER_ORDER": "mrouter,openrouter,ollama,workers-ai",
-    "V2_AGENT_URL": "https://disclaimers-regulation-decent-tours.trycloudflare.com",
     "WORKERS_AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     "OPENROUTER_MODEL": "openai/gpt-4o-mini",
     "OLLAMA_BASE_URL": "https://ollama.com",

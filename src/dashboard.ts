@@ -3501,6 +3501,7 @@ async function handleWebAgentApi(
   } = await import("./web-agent-store");
   const { runAgent } = await import("./agent");
   const { DEFAULT_SYSTEM_PROMPT } = await import("./env");
+  const { runOpencodeAgent, opencodeConfigured } = await import("./opencode-agent");
 
   let body: Record<string, unknown> = {};
   try {
@@ -3584,6 +3585,33 @@ async function handleWebAgentApi(
     const run = (async () => {
       try {
         await sendEvent("meta", { sessionId });
+        // Agent V2 first: the real opencode agent on the owner's machine.
+        if (opencodeConfigured(env)) {
+          await sendEvent("status", { status: "agent v2 running…" });
+          await setJob({ status: "running", activity: "agent v2 running…" });
+          const run = await runOpencodeAgent(env, {
+            sessionKey: `web-${identity.id}-${sessionId}`,
+            prompt,
+            timeoutSeconds: 10,
+          });
+          if (run.ok) {
+            // Stream the finished reply out in chunks so the UI types it.
+            const reply = run.output;
+            const chunkSize = 220;
+            for (let i = 0; i < reply.length; i += chunkSize) {
+              await sendEvent("delta", { text: reply.slice(i, i + chunkSize) });
+            }
+            session!.messages.push({ role: "assistant", content: reply, at: Date.now() });
+            session!.updatedAt = Date.now();
+            await saveWebAgentSession(env, identity.id, session!);
+            await sendEvent("done", { text: reply });
+            await setJob({ status: "done", activity: null, finishedAt: Date.now() });
+            return;
+          }
+          const fallbackNote = run.error ?? "unknown error";
+          await sendEvent("status", { status: `v2 failed: ${fallbackNote.slice(0, 120)} — falling back to v1…` });
+          await setJob({ status: "running", activity: "v2 failed — using v1" });
+        }
         const result = await runAgent(env, {
           scope: `web/${identity.id}/${sessionId}`,
           userId: identity.id,

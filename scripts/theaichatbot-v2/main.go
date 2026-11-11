@@ -14,8 +14,10 @@ package main
 //
 //	GET  /v2/health
 //	POST /v2/command {command}
+//	POST /opencode/run {prompt, session} - run the opencode agent (V2)
 //	POST /v2/file {path, content}
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -26,6 +28,27 @@ import (
 	"strings"
 	"time"
 )
+
+var (
+	opencodeModel  = envDefault("V2_OPENCODE_MODEL", "opencode/iceman-free")
+	opencodeRoot   = envDefault("V2_OPENCODE_ROOT", defaultOpencodeRoot())
+	opencodeTmpDir = envDefault("V2_OPENCODE_TMPDIR", "/home/coder/tmp")
+)
+
+func envDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func defaultOpencodeRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	return filepath.Join(home, "theaichatbot-v2", "opencode-sessions")
+}
 
 type commandRequest struct {
 	Command string `json:"command"`
@@ -246,6 +269,110 @@ func handleRead(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+
+// ---- opencode agent (V2) ----
+// Each conversation gets its own directory; follow-ups continue the last
+// opencode session in that directory, so the real opencode agent (with its
+// own tools and session history) handles every turn.
+
+func opencodeSessionDir(requested string) string {
+	name := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			return r
+		}
+		return '-'
+	}, requested)
+	if name == "" || len(name) > 80 {
+		name = fmt.Sprintf("s%d", time.Now().UnixNano())
+	}
+	return filepath.Join(opencodeRoot, name)
+}
+
+type opencodeRequest struct {
+	Prompt  string `json:"prompt"`
+	Session string `json:"session,omitempty"`
+	Timeout int    `json:"timeout,omitempty"`
+}
+
+func handleOpencodeRun(w http.ResponseWriter, r *http.Request) {
+	if !authorized(r) {
+		jsonError(w, http.StatusUnauthorized, "bad token")
+		return
+	}
+	if r.Method != http.MethodPost {
+		jsonError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	var payload opencodeRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		jsonError(w, http.StatusBadRequest, "bad JSON")
+		return
+	}
+	if strings.TrimSpace(payload.Prompt) == "" {
+		jsonError(w, http.StatusBadRequest, "prompt required")
+		return
+	}
+	dir := opencodeSessionDir(payload.Session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		jsonError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	args := []string{"run", "-m", opencodeModel}
+	// Continue the previous session so opencode keeps its own history.
+	ls, _ := os.ReadDir(dir)
+	hasSession := false
+	for _, entry := range ls {
+		if strings.HasPrefix(entry.Name(), ".opencode") || entry.Name() == "opencode.json" {
+			hasSession = true
+			break
+		}
+	}
+	if hasSession {
+		args = append(args, "--continue")
+	}
+	args = append(args, payload.Prompt)
+
+	timeout := time.Duration(payload.Timeout) * time.Second
+	if timeout <= 0 || timeout > 12*time.Minute {
+		timeout = 12 * time.Minute
+	}
+	// Rebuild env so our TMPDIR wins (a stale TMPDIR=/tmp breaks bun).
+	filteredEnv := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "TMPDIR=") && !strings.HasPrefix(kv, "OPENCODE") {
+			filteredEnv = append(filteredEnv, kv)
+		}
+	}
+	cmdEnv := append(filteredEnv, "TMPDIR="+opencodeTmpDir)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	started := time.Now()
+	cmd := exec.CommandContext(ctx, "opencode", args...)
+	cmd.Dir = dir
+	cmd.Env = cmdEnv
+	out, err := cmd.CombinedOutput()
+	elapsed := time.Since(started).Seconds()
+	text := string(out)
+	if err != nil && text == "" {
+		text = "opencode failed: " + err.Error()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"output":   text,
+		"seconds":  elapsed,
+		"session":  filepath.Base(dir),
+		"model":    opencodeModel,
+		"exit_err": errString(err),
+	})
+}
+
+func errString(err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
 func main() {
 	authToken = os.Getenv("V2_TOKEN")
 	if authToken == "" {
@@ -265,6 +392,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v2/health", handleHealth)
+	mux.HandleFunc("/opencode/run", handleOpencodeRun)
 	mux.HandleFunc("/v2/read", handleRead)
 	mux.HandleFunc("/v2/command", handleCommand)
 	mux.HandleFunc("/v2/file", handleFile)

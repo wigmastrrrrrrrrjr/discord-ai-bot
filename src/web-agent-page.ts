@@ -87,6 +87,9 @@ export const WEB_AGENT_HTML = `<!doctype html>
 </head>
 <body>
 <div id="root"></div>
+<div style="position:fixed;top:0;left:0;right:0;z-index:60;background:#16223a;border-bottom:1px solid var(--line);padding:4px 12px;font-size:11px;color:var(--dim);text-align:center">
+  Agent V2 beta, bound to change &middot; Agent V1 is getting sunset on June 1st 2027
+</div>
 <script>
 (function () {
   'use strict';

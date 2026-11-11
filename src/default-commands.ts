@@ -479,7 +479,7 @@ async function agentResponse(
       // DMs may be closed; agent mode is still on.
     }
     return ephemeral(
-      "Agent mode **enabled**. Open your DMs with me and describe a task.",
+      "Agent mode **enabled** (Agent V2 beta, bound to change). Open your DMs with me and describe a task.\n-# Agent V1 is getting sunset on June 1st 2027",
     );
   }
 

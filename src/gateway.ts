@@ -31,6 +31,7 @@ import { ChannelStream } from "./discord/stream";
 import type { Env } from "./env";
 import { boolVar, intVar } from "./env";
 import { getGithubAuth, userHistoryKey } from "./github-auth";
+import { runOpencodeAgent, opencodeConfigured } from "./opencode-agent";
 import { d1KvGet, d1KvPut } from "./db-state";
 import { loadHistory, saveHistory } from "./memory";
 import { recordBanForUser, assignUnverifiedRoleOnJoin } from "./verify-service";
@@ -764,20 +765,51 @@ export class DiscordGateway extends DurableObject<Env> {
         await stream.start();
       }
 
-      const result = await runAgent(this.env, {
-        scope,
-        history,
-        prompt: content,
-        attachmentNote: attachmentInfo.note,
-        attachmentImageUrl: attachmentInfo.imageUrl,
-        systemPrompt: composeSystemPrompt(this.env, config),
-        guildId: message.guild_id,
-        stream: {
-          onDelta: (text) => stream?.delta(text),
-          onReasoning: (text) => stream?.reasoning(text),
-          onStatus: (status) => stream?.setStatus(status),
-        },
-      });
+      let result: { text: string; provider: string; model: string; generatedAttachments?: string[] };
+      if (opencodeConfigured(this.env)) {
+        await stream?.setStatus("Agent V2 running…");
+        const v2Prompt = attachmentInfo.labels.length
+          ? `${content}\n[attachments: ${attachmentInfo.labels.join(", ")}]${attachmentInfo.note ? `\n${attachmentInfo.note}` : ""}`
+          : content;
+        const run = await runOpencodeAgent(this.env, {
+          sessionKey: `guild-${message.guild_id ?? "dm"}-${message.channel_id}-${message.author.id}`,
+          prompt: v2Prompt,
+        });
+        if (!run.ok) {
+          await stream?.setStatus(`V2 failed: ${run.error ?? "unknown"} — falling back to V1`);
+        }
+        result = run.ok
+          ? { text: run.output, provider: "opencode-v2", model: "iceman-free" }
+          : await runAgent(this.env, {
+              scope,
+              history,
+              prompt: content,
+              attachmentNote: attachmentInfo.note,
+              attachmentImageUrl: attachmentInfo.imageUrl,
+              systemPrompt: composeSystemPrompt(this.env, config),
+              guildId: message.guild_id,
+              stream: {
+                onDelta: (text) => stream?.delta(text),
+                onReasoning: (text) => stream?.reasoning(text),
+                onStatus: (status) => stream?.setStatus(status),
+              },
+            });
+      } else {
+        result = await runAgent(this.env, {
+          scope,
+          history,
+          prompt: content,
+          attachmentNote: attachmentInfo.note,
+          attachmentImageUrl: attachmentInfo.imageUrl,
+          systemPrompt: composeSystemPrompt(this.env, config),
+          guildId: message.guild_id,
+          stream: {
+            onDelta: (text) => stream?.delta(text),
+            onReasoning: (text) => stream?.reasoning(text),
+            onStatus: (status) => stream?.setStatus(status),
+          },
+        });
+      }
 
       const footer = boolVar(this.env.SHOW_PROVIDER, true)
         ? `\n\n-# via ${result.provider} · ${result.model}`
@@ -1085,21 +1117,46 @@ export class DiscordGateway extends DurableObject<Env> {
       stream = new ChannelStream(this.env, message.channel_id);
       await stream.start();
 
-      const result = await runAgent(this.env, {
-        scope,
-        userId,
-        history,
-        prompt: `${memoryNote}
-
-User: ${content}`,
-        systemPrompt: AGENT_PROMPT,
-        guildId: undefined,
-        stream: {
-          onDelta: (text) => stream?.delta(text),
-          onReasoning: (text) => stream?.reasoning(text),
-          onStatus: (status) => stream?.setStatus(status),
-        },
-      });
+      let result: { text: string; provider: string; model: string };
+      if (opencodeConfigured(this.env)) {
+        await stream?.setStatus("Agent V2 running…");
+        const run = await runOpencodeAgent(this.env, {
+          sessionKey: `agent-dm-${userId}`,
+          prompt: `${memoryNote}\n\nUser: ${content}`,
+        });
+        if (!run.ok) {
+          await stream?.setStatus(`V2 failed: ${run.error ?? "unknown"} — falling back to V1`);
+        }
+        result = run.ok
+          ? { text: run.output, provider: "opencode-v2", model: "iceman-free" }
+          : await runAgent(this.env, {
+              scope,
+              userId,
+              history,
+              prompt: `${memoryNote}\n\nUser: ${content}`,
+              systemPrompt: AGENT_PROMPT,
+              guildId: undefined,
+              stream: {
+                onDelta: (text) => stream?.delta(text),
+                onReasoning: (text) => stream?.reasoning(text),
+                onStatus: (status) => stream?.setStatus(status),
+              },
+            });
+      } else {
+        result = await runAgent(this.env, {
+          scope,
+          userId,
+          history,
+          prompt: `${memoryNote}\n\nUser: ${content}`,
+          systemPrompt: AGENT_PROMPT,
+          guildId: undefined,
+          stream: {
+            onDelta: (text) => stream?.delta(text),
+            onReasoning: (text) => stream?.reasoning(text),
+            onStatus: (status) => stream?.setStatus(status),
+          },
+        });
+      }
 
       await agentMemoryAppend(this.env, userId, [
         { role: "user", content },
