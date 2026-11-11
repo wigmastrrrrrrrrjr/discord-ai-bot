@@ -85,6 +85,20 @@ export const WEB_AGENT_HTML = `<!doctype html>
     var d = el('a', 'btn-oauth'); d.href = '/auth/discord?next=' + encodeURIComponent('/agent'); d.appendChild(svg(DISCORD_ICON)); d.appendChild(document.createTextNode('Log in with Discord')); oauth.appendChild(d);
 
     box.appendChild(oauth);
+    var legal = el('p', null, '');
+    legal.style.cssText = 'margin:22px 0 0;font-size:12px;color:var(--dim)';
+    var agree = document.createElement('span');
+    agree.textContent = 'When you use the service, you agree to follow the ';
+    legal.appendChild(agree);
+    var tos = document.createElement('a'); tos.href = '/terms'; tos.textContent = 'Terms of Service'; legal.appendChild(tos);
+    var andTou = document.createElement('span'); andTou.textContent = ' and '; legal.appendChild(andTou);
+    var tou = document.createElement('a'); tou.href = '/terms-of-use'; tou.textContent = 'Terms of Use'; legal.appendChild(tou);
+    var dot = document.createElement('span'); dot.textContent = '.'; legal.appendChild(dot);
+    legal.appendChild(document.createElement('br'));
+    var minor = document.createElement('span');
+    minor.textContent = 'If you are under 18, you need a parent or guardian to supervise you to use this service.';
+    legal.appendChild(minor);
+    box.appendChild(legal);
     root.appendChild(box);
   }
 
