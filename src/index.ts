@@ -4,6 +4,7 @@ import { runDefaultCommand, isDefaultCommand, ensureDefaultCommands } from "./de
 import { handleVerificationInteraction } from "./verify";
 import { TERMS_HTML } from "./terms";
 import { TERMS_OF_USE_HTML } from "./terms-of-use";
+import { PRIVACY_HTML } from "./privacy";
 import { VERIFY_PAGE_HTML } from "./verify-page";
 import { jsonResponse } from "./discord/api";
 import { InteractionType } from "./discord/types";
@@ -26,6 +27,12 @@ export default {
 
     if (url.pathname === "/terms") {
       return new Response(TERMS_HTML, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+
+    if (url.pathname === "/privacy") {
+      return new Response(PRIVACY_HTML, {
         headers: { "content-type": "text/html; charset=utf-8" },
       });
     }

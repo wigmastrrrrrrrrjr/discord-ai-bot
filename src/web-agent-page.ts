@@ -93,6 +93,8 @@ export const WEB_AGENT_HTML = `<!doctype html>
     var tos = document.createElement('a'); tos.href = '/terms'; tos.textContent = 'Terms of Service'; legal.appendChild(tos);
     var andTou = document.createElement('span'); andTou.textContent = ' and '; legal.appendChild(andTou);
     var tou = document.createElement('a'); tou.href = '/terms-of-use'; tou.textContent = 'Terms of Use'; legal.appendChild(tou);
+    var comma = document.createElement('span'); comma.textContent = ', and the '; legal.appendChild(comma);
+    var priv = document.createElement('a'); priv.href = '/privacy'; priv.textContent = 'Privacy Policy'; legal.appendChild(priv);
     var dot = document.createElement('span'); dot.textContent = '.'; legal.appendChild(dot);
     legal.appendChild(document.createElement('br'));
     var minor = document.createElement('span');
