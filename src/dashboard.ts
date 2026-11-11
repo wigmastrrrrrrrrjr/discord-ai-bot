@@ -3513,6 +3513,7 @@ async function handleWebAgentApi(
           history,
           prompt,
           systemPrompt: DEFAULT_SYSTEM_PROMPT,
+          model: "dots-studio/dots-3-note-preview:free",
           stream: {
             onDelta: async () => setJob({ status: "running", activity: "writing…" }),
             onStatus: async (status) => {

@@ -126,6 +126,7 @@ export async function runAgent(
     allowTools?: boolean;
     stream?: StreamHandlers;
     guildId?: string;
+    model?: string;
   },
 ): Promise<AgentResult> {
   const messages: ChatMessage[] = [
@@ -178,6 +179,7 @@ export async function runAgent(
         tools,
         maxTokens: MAX_TOKENS,
         temperature: 0.7,
+        model: options.model,
       },
       stream,
     );
@@ -230,6 +232,7 @@ export async function runAgent(
       tools: [],
       maxTokens: MAX_TOKENS,
       temperature: 0.7,
+      model: options.model,
     },
     stream,
   );
