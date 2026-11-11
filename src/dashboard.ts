@@ -3484,6 +3484,8 @@ async function handleWebAgentApi(
     saveSession: saveWebAgentSession,
     deleteSession: deleteWebAgentSession,
     titleFromPrompt,
+    getJob,
+    putJob,
   } = await import("./web-agent-store");
   const { runAgent } = await import("./agent");
   const { DEFAULT_SYSTEM_PROMPT } = await import("./env");
@@ -3543,12 +3545,9 @@ async function handleWebAgentApi(
     // Hybrid: stream to the client over SSE, but keep the run alive via
     // waitUntil so it finishes server-side even if the browser disconnects.
     // Job state in KV lets a reconnecting client catch up.
-    const jobKey = `webagent-job:${identity.id}:${sessionId}`;
     const setJob = async (payload: Record<string, unknown>) => {
       try {
-        await env.CONVERSATIONS.put(jobKey, JSON.stringify(payload), {
-          expirationTtl: 3600,
-        });
+        await putJob(env, identity.id, sessionId, payload);
       } catch {
         // job tracking is best-effort
       }
@@ -3641,11 +3640,8 @@ async function handleWebAgentApi(
     const sessionId = url.searchParams.get("session") ?? "";
     if (!sessionId) return apiError("session is required");
     try {
-      const raw = await env.CONVERSATIONS.get(
-        `webagent-job:${identity.id}:${sessionId}`,
-      );
-      if (!raw) return jsonResponse({ status: "none" });
-      return jsonResponse(JSON.parse(raw) as Record<string, unknown>);
+      const job = await getJob(env, identity.id, sessionId);
+      return jsonResponse(job ?? { status: "none" });
     } catch {
       return jsonResponse({ status: "none" });
     }
