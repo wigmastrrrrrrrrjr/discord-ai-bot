@@ -212,6 +212,7 @@ export async function runAgent(
         tool_call_id: call.id,
         content: result,
       });
+      await stream?.onStatus?.(`Reading ${call.function.name} results…`);
     }
     await stream?.onStatus?.("Thinking…");
   }

@@ -44,6 +44,7 @@ export const WEB_AGENT_HTML = `<!doctype html>
   .composer button { background:var(--accent); border:0; color:#fff; border-radius:10px; padding:0 18px; cursor:pointer; font-size:15px; }
   .composer button:disabled { opacity:.45; cursor:default; }
   .status { font-size:11px; color:var(--dim); min-height:16px; }
+  .activity { align-self:flex-start; font-size:13px; padding:4px 0; min-height:22px; }
   .shimmer {
     background: linear-gradient(90deg, #8ea0b3 25%, #e8f1fb 50%, #8ea0b3 75%);
     background-size: 200% 100%;
@@ -65,7 +66,7 @@ export const WEB_AGENT_HTML = `<!doctype html>
   var GOOGLE_ICON = '<svg viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.1 6.1 29.3 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.6-.4-3.9z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.1 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C41.4 34.9 44 30 44 24c0-1.3-.1-2.6-.4-3.9z"/></svg>';
   var DISCORD_ICON = '<svg viewBox="0 0 24 24" fill="#5865F2"><path d="M20.3 4.4A19.8 19.8 0 0 0 15.9 3l-.6 1.2a18 18 0 0 0-6.6 0L8.1 3a19.8 19.8 0 0 0-4.4 1.4C.9 8.6.2 12.7.5 16.7a20 20 0 0 0 6 3l1.3-2a12.9 12.9 0 0 1-2-1l.5-.4a14.2 14.2 0 0 0 11.4 0l.5.4a12.9 12.9 0 0 1-2 1l1.3 2c2.2-.7 4.2-1.7 6-3 .4-4.6-.7-8.6-3.2-12.3zM8.7 14.3c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2z"/></svg>';
 
-  var state = { me: null, sessions: [], active: null, messages: [], busy: false };
+  var state = { me: null, sessions: [], active: null, messages: [], busy: false, activity: null };
 
   function el(tag, cls, text) {
     var node = document.createElement(tag);
@@ -175,6 +176,7 @@ export const WEB_AGENT_HTML = `<!doctype html>
     var chat = byId('chat');
     if (!chat) return;
     chat.innerHTML = '';
+    var act = byId('activity');
     if (!state.messages.length) {
       var empty = el('div', 'msg bot');
       empty.appendChild(el('div', 'who', 'Web Agent'));
@@ -194,7 +196,20 @@ export const WEB_AGENT_HTML = `<!doctype html>
       }
       chat.appendChild(node);
     });
+    var line = el('div', 'activity');
+    line.id = 'activity';
+    if (state.busy && state.activity) { line.textContent = state.activity; line.classList.add('shimmer'); }
+    chat.appendChild(line);
     chat.scrollTop = chat.scrollHeight;
+  }
+
+  function setActivity(label) {
+    state.activity = label || null;
+    var line = byId('activity');
+    if (line) {
+      line.textContent = state.activity || '';
+      line.classList.toggle('shimmer', Boolean(state.activity));
+    }
   }
 
   async function refresh() {
@@ -261,10 +276,11 @@ export const WEB_AGENT_HTML = `<!doctype html>
     state.messages.push({ role: 'user', content: text, at: Date.now() });
     state.messages.push({ role: 'assistant', content: '', at: Date.now() });
     var botIdx = state.messages.length - 1;
+    state.activity = 'thinking…';
     drawMessages();
     var statusEl = byId('status');
-    shimmer(statusEl, 'thinking…');
     var lastTool = null;
+    var sawWriting = false;
     try {
       var res = await fetch('/api/web/agent/chat', {
         method: 'POST',
@@ -293,27 +309,36 @@ export const WEB_AGENT_HTML = `<!doctype html>
           try { payload = JSON.parse(line.slice(5).trim()); } catch (e2) { continue; }
           if (payload.event === 'meta') { createdSession = payload.sessionId; state.active = payload.sessionId; }
           if (payload.event === 'delta' && payload.text) {
+            sawWriting = true;
+            setActivity('writing…');
             state.messages[botIdx].content += payload.text;
             drawMessages();
-            shimmer(statusEl, 'writing…');
           }
           if (payload.event === 'status' && payload.status) {
             var raw = String(payload.status);
-            var toolMatch = raw.match(/^Using\s+([a-z0-9_]+)…?$/i);
-            if (toolMatch) {
-              lastTool = toolMatch[1];
-              shimmer(statusEl, 'running ' + toolMatch[1].replace(/_/g, ' ') + '…');
-            } else if (/^(thinking|reading|writing|running)/i.test(raw)) {
-              shimmer(statusEl, raw.toLowerCase());
+            var runMatch = raw.match(/^Using\s+([a-z0-9_]+)…?$/i);
+            var readMatch = raw.match(/^Reading\s+([a-z0-9_]+)\s+results…?$/i);
+            if (runMatch) {
+              lastTool = runMatch[1];
+              setActivity('running ' + runMatch[1].replace(/_/g, ' ') + '…');
+            } else if (readMatch) {
+              lastTool = readMatch[1];
+              setActivity('reading ' + readMatch[1].replace(/_/g, ' ') + ' results…');
+            } else if (/^writing/i.test(raw)) {
+              setActivity('writing…');
+            } else if (/^thinking/i.test(raw)) {
+              setActivity('thinking…');
             } else {
-              shimmer(statusEl, raw.toLowerCase().replace(/…$/, '') + '…');
+              setActivity(raw.toLowerCase());
             }
           }
           if (payload.event === 'done') {
             state.messages[botIdx].content = payload.text || state.messages[botIdx].content;
             if (lastTool) {
-              shimmer(statusEl, 'used ' + lastTool.replace(/_/g, ' '));
-              setTimeout(function () { statusEl.textContent = ''; statusEl.className = 'status'; }, 1600);
+              setActivity('used ' + lastTool.replace(/_/g, ' '));
+              setTimeout(function () { setActivity(null); drawMessages(); }, 1800);
+            } else {
+              setActivity(null);
             }
           }
           if (payload.event === 'error') throw new Error(payload.text || 'Agent failed');
@@ -321,15 +346,15 @@ export const WEB_AGENT_HTML = `<!doctype html>
       }
       var data = await api('/api/web/agent/sessions');
       state.sessions = data.sessions || [];
-      if (statusEl.className.indexOf('shimmer') >= 0 && !lastTool) { statusEl.textContent = ''; statusEl.className = 'status'; }
     } catch (error) {
+      setActivity(null);
       byId('err').textContent = 'Agent failed: ' + error.message;
       if (!state.messages[botIdx].content) state.messages.splice(botIdx, 1);
     } finally {
       state.busy = false;
       byId('send').disabled = false;
+      state.activity = null;
       drawMessages();
-      if (!lastTool) { statusEl.textContent = ''; statusEl.className = 'status'; }
     }
   }
 
