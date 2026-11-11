@@ -301,6 +301,7 @@ export async function handleDashboard(
   request: Request,
   env: Env,
   url: URL,
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   if (request.method === "GET" && url.pathname === "/") {
     return new Response(LANDING_HTML, {
@@ -530,11 +531,11 @@ export async function handleDashboard(
     return jsonResponse({ identity });
   }
 
-  if (url.pathname.startsWith("/api/web/agent/") && !request.method.startsWith("GET")) {
+  if (url.pathname.startsWith("/api/web/agent/")) {
     const { getWebIdentity } = await import("./web-agent-auth");
     const identity = await getWebIdentity(env, request);
     if (!identity) return apiError("Not logged in", 401);
-    return handleWebAgentApi(env, request, url, identity);
+    return handleWebAgentApi(env, request, url, identity, ctx);
   }
   if (url.pathname === "/api/web/agent/sessions" && request.method === "GET") {
     const { getWebIdentity } = await import("./web-agent-auth");
@@ -3443,6 +3444,7 @@ async function handleWebAgentApi(
   request: Request,
   url: URL,
   identity: { id: string },
+  ctx?: ExecutionContext,
 ): Promise<Response> {
   const {
     createSession: createWebAgentSession,
@@ -3485,22 +3487,31 @@ async function handleWebAgentApi(
       session = await createWebAgentSession(env, identity.id, titleFromPrompt(prompt));
       sessionId = session.id;
     }
-    const encoder = new TextEncoder();
-    const stream = new TransformStream<Uint8Array, Uint8Array>();
-    const writer = stream.writable.getWriter();
-    const sendEvent = async (event: string, data: Record<string, unknown>) => {
-      await writer.write(
-        encoder.encode(`data: ${JSON.stringify({ event, ...data })}\n\n`),
-      );
-    };
     const history = session.messages.map(
       (m: { role: string; content: string }) =>
         ({ role: m.role, content: m.content }) as { role: "user" | "assistant"; content: string },
     );
     session.messages.push({ role: "user", content: prompt, at: Date.now() });
-    const done = (async () => {
+    session.updatedAt = Date.now();
+    if (session.title === "New chat") session.title = titleFromPrompt(prompt);
+    await saveWebAgentSession(env, identity.id, session);
+
+    // Fire-and-forget: the run keeps going on the server even if the browser
+    // tab closes. The client polls /api/web/agent/job for progress.
+    const jobKey = `webagent-job:${identity.id}:${sessionId}`;
+    const setJob = async (payload: Record<string, unknown>) => {
       try {
-        await sendEvent("meta", { sessionId });
+        await env.CONVERSATIONS.put(jobKey, JSON.stringify(payload), {
+          expirationTtl: 3600,
+        });
+      } catch {
+        // job tracking is best-effort
+      }
+    };
+    await setJob({ status: "running", activity: "thinking…", startedAt: Date.now() });
+
+    const run = (async () => {
+      try {
         const result = await runAgent(env, {
           scope: `web/${identity.id}/${sessionId}`,
           userId: identity.id,
@@ -3508,31 +3519,46 @@ async function handleWebAgentApi(
           prompt,
           systemPrompt: DEFAULT_SYSTEM_PROMPT,
           stream: {
-            onDelta: async (text) => {
-              await sendEvent("delta", { text });
+            onDelta: async () => setJob({ status: "running", activity: "writing…" }),
+            onStatus: async (status) => {
+              let label = status.toLowerCase();
+              const runMatch = status.match(/^Using\s+([a-z0-9_]+)…?$/i);
+              const readMatch = status.match(/^Reading\s+([a-z0-9_]+)\s+results…?$/i);
+              if (runMatch) label = `running ${runMatch[1].replace(/_/g, " ")}…`;
+              else if (readMatch) label = `reading ${readMatch[1].replace(/_/g, " ")} results…`;
+              await setJob({ status: "running", activity: label });
             },
-            onStatus: async (status) => sendEvent("status", { status }),
           },
         });
         session!.messages.push({ role: "assistant", content: result.text, at: Date.now() });
         session!.updatedAt = Date.now();
-        if (session!.title === "New chat") session!.title = titleFromPrompt(prompt);
         await saveWebAgentSession(env, identity.id, session!);
-        await sendEvent("done", { text: result.text });
+        await setJob({ status: "done", activity: null, finishedAt: Date.now() });
       } catch (error) {
         const text = error instanceof Error ? error.message : String(error);
-        await sendEvent("error", { text: text.slice(0, 300) });
-      } finally {
-        await writer.close();
+        await setJob({ status: "error", error: text.slice(0, 300) });
       }
     })();
-    void done;
-    return new Response(stream.readable, {
-      headers: {
-        "content-type": "text/event-stream",
-        "cache-control": "no-store",
-      },
-    });
+    if (ctx) {
+      ctx.waitUntil(run);
+      return jsonResponse({ started: true, sessionId });
+    }
+    await run;
+    return jsonResponse({ started: true, sessionId });
+  }
+
+  if (pathname === "/api/web/agent/job" && request.method === "GET") {
+    const sessionId = url.searchParams.get("session") ?? "";
+    if (!sessionId) return apiError("session is required");
+    try {
+      const raw = await env.CONVERSATIONS.get(
+        `webagent-job:${identity.id}:${sessionId}`,
+      );
+      if (!raw) return jsonResponse({ status: "none" });
+      return jsonResponse(JSON.parse(raw) as Record<string, unknown>);
+    } catch {
+      return jsonResponse({ status: "none" });
+    }
   }
 
   return apiError("Unknown web agent route", 404);

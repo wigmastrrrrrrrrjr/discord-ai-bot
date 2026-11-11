@@ -50,7 +50,7 @@ export default {
     }
 
     if (url.pathname !== "/interactions") {
-      return handleDashboard(request, env, url);
+      return handleDashboard(request, env, url, ctx);
     }
 
     if (request.method !== "POST") {

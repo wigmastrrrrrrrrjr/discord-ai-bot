@@ -25,9 +25,30 @@ export const WEB_AGENT_HTML = `<!doctype html>
   .me img, .me .pic { width:28px; height:28px; border-radius:50%; background:#24344d; }
   .me .who { font-size:12px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .main { flex:1; display:flex; flex-direction:column; }
-  .chat { flex:1; overflow-y:auto; padding:24px 18vw 24px; display:flex; flex-direction:column; gap:14px; }
+  .chat { flex:1; overflow-y:auto; padding:24px 18vw 24px; display:flex; flex-direction:column; gap:14px; scroll-behavior:smooth; }
   @media (max-width:900px){ .chat{padding:18px 14px;} .composer{padding:12px 14px;} }
-  .msg { max-width:760px; white-space:pre-wrap; word-wrap:break-word; }
+  .msg { max-width:760px; white-space:pre-wrap; word-wrap:break-word; animation: rise .28s cubic-bezier(.2,.7,.3,1) both; }
+  @keyframes rise { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
+  @keyframes pop { from { opacity:0; transform:scale(.97); } to { opacity:1; transform:none; } }
+  .composer textarea { transition: border-color .2s, box-shadow .25s; }
+  .composer textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(79,140,255,.18); }
+  .composer button { transition: transform .15s, opacity .2s, box-shadow .25s; box-shadow:0 2px 10px rgba(79,140,255,.25); }
+  .composer button:hover:not(:disabled) { transform:translateY(-1px); box-shadow:0 4px 16px rgba(79,140,255,.35); }
+  .composer button:active:not(:disabled) { transform:translateY(0); }
+  .newchat { transition: transform .15s, filter .2s; }
+  .newchat:hover { transform:translateY(-1px); filter:brightness(1.1); }
+  .sess { transition: background .15s, color .15s, transform .12s; }
+  .sess:hover { transform:translateX(2px); }
+  .btn-oauth { transition: transform .15s, background .2s, border-color .2s; }
+  .btn-oauth:hover { transform:translateY(-2px); border-color:#2f4a73; }
+  .btn-oauth:active { transform:translateY(0); }
+  .login { animation: pop .3s ease both; }
+  .app, .side { transition: width .2s; }
+  .typing { display:inline-flex; gap:4px; padding:6px 2px; }
+  .typing i { width:6px; height:6px; border-radius:50%; background:var(--dim); animation: blink 1.2s infinite ease-in-out; }
+  .typing i:nth-child(2) { animation-delay:.2s; }
+  .typing i:nth-child(3) { animation-delay:.4s; }
+  @keyframes blink { 0%,80%,100% { opacity:.25; transform:translateY(0);} 40% { opacity:1; transform:translateY(-3px);} }
   .msg.user { align-self:flex-end; background:#1c2a42; padding:10px 14px; border-radius:14px 14px 4px 14px; }
   .msg.bot { align-self:flex-start; }
   .msg.bot .who { font-size:11px; color:var(--dim); margin-bottom:2px; }
@@ -198,7 +219,16 @@ export const WEB_AGENT_HTML = `<!doctype html>
     });
     var line = el('div', 'activity');
     line.id = 'activity';
-    if (state.busy && state.activity) { line.textContent = state.activity; line.classList.add('shimmer'); }
+    if (state.busy && state.activity) {
+      line.textContent = state.activity;
+      line.classList.add('shimmer');
+    } else if (state.busy) {
+      var dots = el('span', 'typing');
+      dots.appendChild(document.createElement('i'));
+      dots.appendChild(document.createElement('i'));
+      dots.appendChild(document.createElement('i'));
+      line.appendChild(dots);
+    }
     chat.appendChild(line);
     chat.scrollTop = chat.scrollHeight;
   }
@@ -264,6 +294,57 @@ export const WEB_AGENT_HTML = `<!doctype html>
     node.classList.add('shimmer');
   }
 
+  function setActivity(label) {
+    state.activity = label || null;
+    var line = byId('activity');
+    if (line) {
+      if (state.activity) {
+        line.textContent = state.activity;
+        line.classList.add('shimmer');
+      } else {
+        line.innerHTML = '';
+        var dots = document.createElement('span');
+        dots.className = 'typing';
+        for (var i = 0; i < 3; i++) dots.appendChild(document.createElement('i'));
+        line.appendChild(dots);
+      }
+    }
+  }
+
+  function pollJob(sessionId, botIdx) {
+    var attempts = 0;
+    var timer = setInterval(async function () {
+      attempts++;
+      try {
+        var job = await api('/api/web/agent/job?session=' + encodeURIComponent(sessionId));
+        if (job.status === 'running' && job.activity) setActivity(job.activity);
+        if (job.status === 'done' || attempts > 300) {
+          clearInterval(timer);
+          var data = await api('/api/web/agent/sessions');
+          state.sessions = data.sessions || [];
+          var sess = await api('/api/web/agent/session?id=' + encodeURIComponent(sessionId));
+          state.messages = sess.session.messages || [];
+          state.busy = false;
+          byId('send').disabled = false;
+          state.activity = null;
+          drawMessages();
+        }
+        if (job.status === 'error') {
+          clearInterval(timer);
+          throw new Error(job.error || 'Agent failed');
+        }
+      } catch (error) {
+        clearInterval(timer);
+        state.busy = false;
+        byId('send').disabled = false;
+        state.activity = null;
+        drawMessages();
+        var errEl = byId('err');
+        if (errEl) errEl.textContent = 'Agent failed: ' + error.message;
+      }
+    }, 1800);
+  }
+
   async function send() {
     if (state.busy) return;
     var ta = byId('prompt');
@@ -273,88 +354,31 @@ export const WEB_AGENT_HTML = `<!doctype html>
     byId('send').disabled = true;
     ta.value = '';
     ta.style.height = 'auto';
+    var errEl = byId('err'); if (errEl) errEl.textContent = '';
     state.messages.push({ role: 'user', content: text, at: Date.now() });
     state.messages.push({ role: 'assistant', content: '', at: Date.now() });
     var botIdx = state.messages.length - 1;
     state.activity = 'thinking…';
     drawMessages();
-    var statusEl = byId('status');
-    var lastTool = null;
-    var sawWriting = false;
     try {
-      var res = await fetch('/api/web/agent/chat', {
+      var data = await api('/api/web/agent/chat', {
         method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ sessionId: state.active, prompt: text })
       });
-      if (!res.ok) {
-        var errData = {}; try { errData = await res.json(); } catch (e) {}
-        throw new Error(errData.error || ('HTTP ' + res.status));
+      if (data.sessionId && data.sessionId !== state.active) {
+        state.active = data.sessionId;
+        var refreshed = await api('/api/web/agent/sessions');
+        state.sessions = refreshed.sessions || [];
+        drawMessages();
       }
-      var reader = res.body.getReader();
-      var decoder = new TextDecoder();
-      var buffer = '';
-      var createdSession = null;
-      while (true) {
-        var chunk = await reader.read();
-        if (chunk.done) break;
-        buffer += decoder.decode(chunk.value, { stream: true });
-        var events = buffer.split('\\n\\n');
-        buffer = events.pop();
-        for (var i = 0; i < events.length; i++) {
-          var line = events[i];
-          if (!line.startsWith('data:')) continue;
-          var payload = {};
-          try { payload = JSON.parse(line.slice(5).trim()); } catch (e2) { continue; }
-          if (payload.event === 'meta') { createdSession = payload.sessionId; state.active = payload.sessionId; }
-          if (payload.event === 'delta' && payload.text) {
-            sawWriting = true;
-            setActivity('writing…');
-            state.messages[botIdx].content += payload.text;
-            drawMessages();
-          }
-          if (payload.event === 'status' && payload.status) {
-            var raw = String(payload.status);
-            var runMatch = raw.match(/^Using\s+([a-z0-9_]+)…?$/i);
-            var readMatch = raw.match(/^Reading\s+([a-z0-9_]+)\s+results…?$/i);
-            if (runMatch) {
-              lastTool = runMatch[1];
-              setActivity('running ' + runMatch[1].replace(/_/g, ' ') + '…');
-            } else if (readMatch) {
-              lastTool = readMatch[1];
-              setActivity('reading ' + readMatch[1].replace(/_/g, ' ') + ' results…');
-            } else if (/^writing/i.test(raw)) {
-              setActivity('writing…');
-            } else if (/^thinking/i.test(raw)) {
-              setActivity('thinking…');
-            } else {
-              setActivity(raw.toLowerCase());
-            }
-          }
-          if (payload.event === 'done') {
-            state.messages[botIdx].content = payload.text || state.messages[botIdx].content;
-            if (lastTool) {
-              setActivity('used ' + lastTool.replace(/_/g, ' '));
-              setTimeout(function () { setActivity(null); drawMessages(); }, 1800);
-            } else {
-              setActivity(null);
-            }
-          }
-          if (payload.event === 'error') throw new Error(payload.text || 'Agent failed');
-        }
-      }
-      var data = await api('/api/web/agent/sessions');
-      state.sessions = data.sessions || [];
+      pollJob(state.active, botIdx);
     } catch (error) {
-      setActivity(null);
-      byId('err').textContent = 'Agent failed: ' + error.message;
-      if (!state.messages[botIdx].content) state.messages.splice(botIdx, 1);
-    } finally {
       state.busy = false;
       byId('send').disabled = false;
       state.activity = null;
       drawMessages();
+      var e2 = byId('err');
+      if (e2) e2.textContent = 'Agent failed: ' + error.message;
     }
   }
 
