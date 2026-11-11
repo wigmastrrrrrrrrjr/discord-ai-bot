@@ -3491,8 +3491,9 @@ async function handleWebAgentApi(
     if (session.title === "New chat") session.title = titleFromPrompt(prompt);
     await saveWebAgentSession(env, identity.id, session);
 
-    // Fire-and-forget: the run keeps going on the server even if the browser
-    // tab closes. The client polls /api/web/agent/job for progress.
+    // Hybrid: stream to the client over SSE, but keep the run alive via
+    // waitUntil so it finishes server-side even if the browser disconnects.
+    // Job state in KV lets a reconnecting client catch up.
     const jobKey = `webagent-job:${identity.id}:${sessionId}`;
     const setJob = async (payload: Record<string, unknown>) => {
       try {
@@ -3505,8 +3506,24 @@ async function handleWebAgentApi(
     };
     await setJob({ status: "running", activity: "thinking…", startedAt: Date.now() });
 
+    const encoder = new TextEncoder();
+    const stream = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = stream.writable.getWriter();
+    let clientGone = false;
+    const sendEvent = async (event: string, data: Record<string, unknown>) => {
+      if (clientGone) return;
+      try {
+        await writer.write(
+          encoder.encode(`data: ${JSON.stringify({ event, ...data })}\n\n`),
+        );
+      } catch {
+        clientGone = true; // browser tab closed; run continues server-side
+      }
+    };
+
     const run = (async () => {
       try {
+        await sendEvent("meta", { sessionId });
         const result = await runAgent(env, {
           scope: `web/${identity.id}/${sessionId}`,
           userId: identity.id,
@@ -3515,29 +3532,50 @@ async function handleWebAgentApi(
           systemPrompt: DEFAULT_SYSTEM_PROMPT,
           model: "dots-studio/dots-3-note-preview:free",
           stream: {
-            onDelta: async () => setJob({ status: "running", activity: "writing…" }),
+            onDelta: async (text) => {
+              await sendEvent("delta", { text });
+              await setJob({ status: "running", activity: "writing…" });
+            },
             onStatus: async (status) => {
               let label = status.toLowerCase();
               const runMatch = status.match(/^Using\s+([a-z0-9_]+)…?$/i);
               const readMatch = status.match(/^Reading\s+([a-z0-9_]+)\s+results…?$/i);
               if (runMatch) label = `running ${runMatch[1].replace(/_/g, " ")}…`;
               else if (readMatch) label = `reading ${readMatch[1].replace(/_/g, " ")} results…`;
+              await sendEvent("status", { status: label });
               await setJob({ status: "running", activity: label });
+            },
+            onToolEvent: async (event) => {
+              await sendEvent("tool", { ...event });
             },
           },
         });
         session!.messages.push({ role: "assistant", content: result.text, at: Date.now() });
         session!.updatedAt = Date.now();
         await saveWebAgentSession(env, identity.id, session!);
+        await sendEvent("done", { text: result.text });
         await setJob({ status: "done", activity: null, finishedAt: Date.now() });
       } catch (error) {
         const text = error instanceof Error ? error.message : String(error);
+        await sendEvent("error", { text: text.slice(0, 300) });
         await setJob({ status: "error", error: text.slice(0, 300) });
+      } finally {
+        try {
+          await writer.close();
+        } catch {
+          // client already gone
+        }
       }
     })();
     if (ctx) {
       ctx.waitUntil(run);
-      return jsonResponse({ started: true, sessionId });
+      return new Response(stream.readable, {
+        headers: {
+          "content-type": "text/event-stream",
+          "cache-control": "no-store",
+          "x-accel-buffering": "no",
+        },
+      });
     }
     await run;
     return jsonResponse({ started: true, sessionId });

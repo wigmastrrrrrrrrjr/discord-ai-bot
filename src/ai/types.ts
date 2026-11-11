@@ -64,6 +64,12 @@ export interface StreamHandlers {
   onDelta?: (text: string) => void | Promise<void>;
   onReasoning?: (text: string) => void | Promise<void>;
   onStatus?: (status: string) => void | Promise<void>;
+  onToolEvent?: (event: {
+    phase: "start" | "end";
+    name: string;
+    args?: string;
+    preview?: string;
+  }) => void | Promise<void>;
 }
 
 export interface AiProvider {

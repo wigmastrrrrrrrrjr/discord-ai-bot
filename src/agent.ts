@@ -200,7 +200,24 @@ export async function runAgent(
 
     for (const call of response.toolCalls) {
       await stream?.onStatus?.(toolStatus(call.function.name));
+      let toolArgs = call.function.arguments ?? "";
+      try {
+        toolArgs = JSON.stringify(JSON.parse(toolArgs));
+      } catch {
+        toolArgs = String(toolArgs).slice(0, 200);
+      }
+      await stream?.onToolEvent?.({
+        phase: "start",
+        name: call.function.name,
+        args: toolArgs.slice(0, 300),
+      });
       const result = await executeTool(requestEnv, options.scope, call);
+      await stream?.onToolEvent?.({
+        phase: "end",
+        name: call.function.name,
+        args: toolArgs.slice(0, 300),
+        preview: result.slice(0, 240),
+      });
       try {
         const parsed = JSON.parse(result) as { pending_attachment?: string };
         if (parsed?.pending_attachment) {

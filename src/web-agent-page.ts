@@ -65,7 +65,10 @@ export const WEB_AGENT_HTML = `<!doctype html>
   .composer button { background:var(--accent); border:0; color:#fff; border-radius:10px; padding:0 18px; cursor:pointer; font-size:15px; }
   .composer button:disabled { opacity:.45; cursor:default; }
   .status { font-size:11px; color:var(--dim); min-height:16px; }
-  .activity { align-self:flex-start; font-size:13px; padding:4px 0; min-height:22px; }
+  .activity { align-self:flex-start; font-size:13px; padding:4px 0; min-height:22px; transition: opacity .28s ease, transform .28s ease; }
+  .activity.fading { opacity:0; transform:translateY(4px); }
+  .cmd { display:inline-block; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; background:#101722; border:1px solid var(--line); border-radius:6px; padding:2px 8px; margin-right:6px; color:#9fc1ff; }
+  .cmd.out { color:#9be6a8; border-color:#1e3b2a; background:#0e1812; }
   .shimmer {
     background: linear-gradient(90deg, #8ea0b3 25%, #e8f1fb 50%, #8ea0b3 75%);
     background-size: 200% 100%;
@@ -297,37 +300,63 @@ export const WEB_AGENT_HTML = `<!doctype html>
   function setActivity(label) {
     state.activity = label || null;
     var line = byId('activity');
-    if (line) {
-      if (state.activity) {
+    if (!line) return;
+    if (state.activity) {
+      line.classList.add('fading');
+      setTimeout(function () {
+        line.classList.remove('fading');
         line.textContent = state.activity;
         line.classList.add('shimmer');
-      } else {
+      }, 150);
+    } else {
+      line.classList.add('fading');
+      setTimeout(function () {
+        line.classList.remove('fading', 'shimmer');
         line.innerHTML = '';
         var dots = document.createElement('span');
         dots.className = 'typing';
         for (var i = 0; i < 3; i++) dots.appendChild(document.createElement('i'));
         line.appendChild(dots);
-      }
+      }, 150);
     }
   }
 
-  function pollJob(sessionId, botIdx) {
+  // Renders a tool activity line: | command | output… | or | command | done |
+  function renderToolLine(name, args, preview) {
+    var line = byId('activity');
+    if (!line) return;
+    line.classList.remove('fading', 'shimmer');
+    line.innerHTML = '';
+    var open = document.createElement('span'); open.textContent = '| '; line.appendChild(open);
+    var cmd = document.createElement('span'); cmd.className = 'cmd';
+    var shown = args || name;
+    try {
+      var parsed = JSON.parse(args);
+      var keys = Object.keys(parsed);
+      if (keys.length) shown = String(parsed[keys[0]]).slice(0, 80) || name;
+    } catch (e) {}
+    cmd.textContent = name + ' ' + shown;
+    line.appendChild(cmd);
+    var sep = document.createElement('span'); sep.textContent = '| '; line.appendChild(sep);
+    var out = document.createElement('span'); out.className = 'cmd out';
+    out.textContent = preview ? (preview.replace(/\s+/g, ' ').slice(0, 60) + '…') : '…';
+    line.appendChild(out);
+    var close = document.createElement('span'); close.textContent = ' |'; line.appendChild(close);
+  }
+
+  function pollJob(sessionId) {
     var attempts = 0;
     var timer = setInterval(async function () {
       attempts++;
       try {
         var job = await api('/api/web/agent/job?session=' + encodeURIComponent(sessionId));
-        if (job.status === 'running' && job.activity) setActivity(job.activity);
+        if (job.status === 'running') {
+          state.busy = true;
+          if (job.activity) setActivity(job.activity); else setActivity(null);
+        }
         if (job.status === 'done' || attempts > 300) {
           clearInterval(timer);
-          var data = await api('/api/web/agent/sessions');
-          state.sessions = data.sessions || [];
-          var sess = await api('/api/web/agent/session?id=' + encodeURIComponent(sessionId));
-          state.messages = sess.session.messages || [];
-          state.busy = false;
-          byId('send').disabled = false;
-          state.activity = null;
-          drawMessages();
+          await finishLocally(sessionId);
         }
         if (job.status === 'error') {
           clearInterval(timer);
@@ -343,6 +372,17 @@ export const WEB_AGENT_HTML = `<!doctype html>
         if (errEl) errEl.textContent = 'Agent failed: ' + error.message;
       }
     }, 1800);
+  }
+
+  async function finishLocally(sessionId) {
+    var data = await api('/api/web/agent/sessions');
+    state.sessions = data.sessions || [];
+    var sess = await api('/api/web/agent/session?id=' + encodeURIComponent(sessionId));
+    state.messages = sess.session.messages || [];
+    state.busy = false;
+    byId('send').disabled = false;
+    state.activity = null;
+    drawMessages();
   }
 
   async function send() {
@@ -361,25 +401,89 @@ export const WEB_AGENT_HTML = `<!doctype html>
     state.activity = 'thinking…';
     drawMessages();
     try {
-      var data = await api('/api/web/agent/chat', {
+      var res = await fetch('/api/web/agent/chat', {
         method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ sessionId: state.active, prompt: text })
       });
-      if (data.sessionId && data.sessionId !== state.active) {
-        state.active = data.sessionId;
-        var refreshed = await api('/api/web/agent/sessions');
-        state.sessions = refreshed.sessions || [];
+      if (!res.ok) {
+        var errData = {}; try { errData = await res.json(); } catch (e) {}
+        throw new Error(errData.error || ('HTTP ' + res.status));
+      }
+      if (dataLooksJson(res)) {
+        // fallback (no ctx streaming) — poll the job
+        var started = await res.json();
+        if (started.sessionId && started.sessionId !== state.active) {
+          state.active = started.sessionId;
+          var refreshed = await api('/api/web/agent/sessions');
+          state.sessions = refreshed.sessions || [];
+          drawMessages();
+        }
+        pollJob(state.active);
+        return;
+      }
+      var reader = res.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = '';
+      var sessionId = state.active;
+      var gotDone = false;
+      var streamDead = false;
+      while (true) {
+        var chunk = await reader.read().catch(function () { return { done: true }; });
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        var events = buffer.split('\\n\\n');
+        buffer = events.pop();
+        for (var i = 0; i < events.length; i++) {
+          var line = events[i];
+          if (!line.startsWith('data:')) continue;
+          var payload = {};
+          try { payload = JSON.parse(line.slice(5).trim()); } catch (e2) { continue; }
+          if (payload.event === 'meta') sessionId = payload.sessionId;
+          if (payload.event === 'delta' && payload.text) {
+            state.messages[botIdx].content += payload.text;
+            drawMessages();
+            setActivity('writing…');
+          }
+          if (payload.event === 'status' && payload.status) setActivity(payload.status);
+          if (payload.event === 'tool') {
+            if (payload.phase === 'start') renderToolLine(payload.name, payload.args, null);
+            else renderToolLine(payload.name, payload.args, payload.preview || '');
+            if (payload.phase === 'start') setActivity(null);
+          }
+          if (payload.event === 'done') {
+            gotDone = true;
+            state.messages[botIdx].content = payload.text || state.messages[botIdx].content;
+            setActivity(null);
+            var data3 = await api('/api/web/agent/sessions');
+            state.sessions = data3.sessions || [];
+          }
+          if (payload.event === 'error') throw new Error(payload.text || 'Agent failed');
+        }
+      }
+      if (!gotDone) {
+        // browser closed mid-stream or server kept running — recover by polling
+        pollJob(sessionId);
+      } else {
+        state.busy = false;
+        byId('send').disabled = false;
+        state.activity = null;
         drawMessages();
       }
-      pollJob(state.active, botIdx);
     } catch (error) {
       state.busy = false;
       byId('send').disabled = false;
       state.activity = null;
       drawMessages();
-      var e2 = byId('err');
-      if (e2) e2.textContent = 'Agent failed: ' + error.message;
+      var e3 = byId('err');
+      if (e3) e3.textContent = 'Agent failed: ' + error.message;
     }
+  }
+
+  function dataLooksJson(res) {
+    var ct = res.headers.get('content-type') || '';
+    return ct.indexOf('json') >= 0;
   }
 
   refresh();
