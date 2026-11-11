@@ -50,6 +50,7 @@ export interface ChatRequest {
   temperature?: number;
   guildId?: string;
   model?: string;
+  modelChain?: string[];
 }
 
 export interface ChatResponse {

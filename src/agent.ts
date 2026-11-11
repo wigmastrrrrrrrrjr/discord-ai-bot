@@ -127,6 +127,7 @@ export async function runAgent(
     stream?: StreamHandlers;
     guildId?: string;
     model?: string;
+    modelChain?: string[];
   },
 ): Promise<AgentResult> {
   const messages: ChatMessage[] = [
@@ -250,6 +251,7 @@ export async function runAgent(
       maxTokens: MAX_TOKENS,
       temperature: 0.7,
       model: options.model,
+      modelChain: options.modelChain,
     },
     stream,
   );

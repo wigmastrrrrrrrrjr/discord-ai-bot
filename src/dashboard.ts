@@ -3530,7 +3530,14 @@ async function handleWebAgentApi(
           history,
           prompt,
           systemPrompt: DEFAULT_SYSTEM_PROMPT,
-          model: "dots-studio/dots-3-note-preview:free",
+          modelChain: [
+            "dots-studio/dots-3-note-preview:free",
+            "baidu/ernie-5.5-flash-preview:free",
+            "nvidia/nemotron-3.5-super-vl:free",
+            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+            "codestral-latest",
+            "kilo-auto/free",
+          ],
           stream: {
             onDelta: async (text) => {
               await sendEvent("delta", { text });

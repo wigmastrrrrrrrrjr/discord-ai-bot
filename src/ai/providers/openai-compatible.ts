@@ -181,8 +181,9 @@ export function createOpenAiCompatibleProvider(
 
     // A pinned model (anything the caller explicitly set) is tried exactly
     // once. Without one — or with the chain's head — walk down modelChain.
-    const chain =
-      !request.model || request.model === (options.modelChain?.[0] ?? "")
+    const chain = request.modelChain?.length
+      ? request.modelChain
+      : !request.model || request.model === (options.modelChain?.[0] ?? "")
         ? options.modelChain
         : undefined;
     const candidates = chain?.length ? chain : [body.model as string];

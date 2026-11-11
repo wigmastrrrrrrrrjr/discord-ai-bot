@@ -67,6 +67,9 @@ export const WEB_AGENT_HTML = `<!doctype html>
   .status { font-size:11px; color:var(--dim); min-height:16px; }
   .activity { align-self:flex-start; font-size:13px; padding:4px 0; min-height:22px; transition: opacity .28s ease, transform .28s ease; }
   .activity.fading { opacity:0; transform:translateY(4px); }
+  .step { align-self:flex-start; font-size:12px; color:var(--dim); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; background:#101722; border:1px solid var(--line); border-left:3px solid #2f4a73; border-radius:6px; padding:4px 10px; max-width:760px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; animation: rise .25s ease both; }
+  .step.done { border-left-color:#2f8f57; }
+  .step b { color:#9fc1ff; font-weight:600; }
   .cmd { display:inline-block; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; background:#101722; border:1px solid var(--line); border-radius:6px; padding:2px 8px; margin-right:6px; color:#9fc1ff; }
   .cmd.out { color:#9be6a8; border-color:#1e3b2a; background:#0e1812; }
   .shimmer {
@@ -91,6 +94,7 @@ export const WEB_AGENT_HTML = `<!doctype html>
   var DISCORD_ICON = '<svg viewBox="0 0 24 24" fill="#5865F2"><path d="M20.3 4.4A19.8 19.8 0 0 0 15.9 3l-.6 1.2a18 18 0 0 0-6.6 0L8.1 3a19.8 19.8 0 0 0-4.4 1.4C.9 8.6.2 12.7.5 16.7a20 20 0 0 0 6 3l1.3-2a12.9 12.9 0 0 1-2-1l.5-.4a14.2 14.2 0 0 0 11.4 0l.5.4a12.9 12.9 0 0 1-2 1l1.3 2c2.2-.7 4.2-1.7 6-3 .4-4.6-.7-8.6-3.2-12.3zM8.7 14.3c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2z"/></svg>';
 
   var state = { me: null, sessions: [], active: null, messages: [], busy: false, activity: null };
+  var runStepsGlobal = [];
 
   function el(tag, cls, text) {
     var node = document.createElement(tag);
@@ -208,6 +212,14 @@ export const WEB_AGENT_HTML = `<!doctype html>
       chat.appendChild(empty);
     }
     state.messages.forEach(function (m, idx) {
+      if (m.role === 'step') {
+        var stepNode = el('div', 'step' + (m.done ? ' done' : ''));
+        var name = el('b', null, m.tool + ' ');
+        stepNode.appendChild(name);
+        stepNode.appendChild(document.createTextNode(m.content));
+        chat.appendChild(stepNode);
+        return;
+      }
       var node = el('div', 'msg ' + (m.role === 'user' ? 'user' : 'bot'));
       if (m.role !== 'user') {
         var who = el('div', 'who', 'Web Agent');
@@ -374,11 +386,23 @@ export const WEB_AGENT_HTML = `<!doctype html>
     }, 1800);
   }
 
+  function withSteps(messages) {
+    if (!runStepsGlobal.length) return messages;
+    var out = [];
+    for (var i = 0; i < messages.length; i++) {
+      out.push(messages[i]);
+      if (messages[i].role === 'user' && i + 1 < messages.length && messages[i + 1].role === 'assistant') {
+        for (var j = 0; j < runStepsGlobal.length; j++) out.push(runStepsGlobal[j]);
+      }
+    }
+    return out;
+  }
+
   async function finishLocally(sessionId) {
     var data = await api('/api/web/agent/sessions');
     state.sessions = data.sessions || [];
     var sess = await api('/api/web/agent/session?id=' + encodeURIComponent(sessionId));
-    state.messages = sess.session.messages || [];
+    state.messages = withSteps(sess.session.messages || []);
     state.busy = false;
     byId('send').disabled = false;
     state.activity = null;
@@ -398,6 +422,9 @@ export const WEB_AGENT_HTML = `<!doctype html>
     state.messages.push({ role: 'user', content: text, at: Date.now() });
     state.messages.push({ role: 'assistant', content: '', at: Date.now() });
     var botIdx = state.messages.length - 1;
+    var stepIdx = null;
+    runStepsGlobal = [];
+    var runSteps = runStepsGlobal;
     state.activity = 'thinking…';
     drawMessages();
     try {
@@ -448,9 +475,28 @@ export const WEB_AGENT_HTML = `<!doctype html>
           }
           if (payload.event === 'status' && payload.status) setActivity(payload.status);
           if (payload.event === 'tool') {
-            if (payload.phase === 'start') renderToolLine(payload.name, payload.args, null);
-            else renderToolLine(payload.name, payload.args, payload.preview || '');
-            if (payload.phase === 'start') setActivity(null);
+            if (payload.phase === 'start') {
+              var argsPreview = '';
+              try {
+                var parsedA = JSON.parse(payload.args || '{}');
+                var keysA = Object.keys(parsedA);
+                if (keysA.length) argsPreview = String(parsedA[keysA[0]]).slice(0, 70);
+              } catch (eA) { argsPreview = (payload.args || '').slice(0, 70); }
+              runSteps.push({ role: 'step', tool: payload.name, done: false, content: argsPreview || 'running', at: Date.now() });
+              stepIdx = state.messages.push(runSteps[runSteps.length - 1]) - 1;
+              renderToolLine(payload.name, payload.args, null);
+              setActivity('running ' + payload.name.replace(/_/g, ' ') + '…');
+              drawMessages();
+            } else {
+              var outPreview = (payload.preview || '').replace(/\s+/g, ' ').slice(0, 70);
+              if (stepIdx != null) {
+                state.messages[stepIdx].done = true;
+                state.messages[stepIdx].content = outPreview || 'done';
+              }
+              renderToolLine(payload.name, payload.args, outPreview);
+              setActivity('reading ' + payload.name.replace(/_/g, ' ') + ' results…');
+              drawMessages();
+            }
           }
           if (payload.event === 'done') {
             gotDone = true;
