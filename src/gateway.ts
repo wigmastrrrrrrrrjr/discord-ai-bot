@@ -745,8 +745,11 @@ export class DiscordGateway extends DurableObject<Env> {
     const scope = message.guild_id
       ? `guilds/${message.guild_id}`
       : `users/${message.author.id}`;
+    // Per-user session per channel: if two people prompt while the bot is
+    // already answering, each gets their own conversation stream instead of
+    // both fighting over one shared history.
     const historyKey = message.guild_id
-      ? `conv:guild:${message.guild_id}:${message.channel_id}`
+      ? `conv:guild:${message.guild_id}:${message.channel_id}:u${message.author.id}`
       : `conv:dm:${message.author.id}`;
     const maxHistory = intVar(this.env.MAX_HISTORY_MESSAGES, 20);
 
@@ -874,7 +877,7 @@ export class DiscordGateway extends DurableObject<Env> {
 
     const requestEnv = await applyGuildApiKeys(this.env, guildId);
     const tools = toolsFor(requestEnv);
-    const historyKey = `conv:model:${guildId}:${message.channel_id}`;
+    const historyKey = `conv:model:${guildId}:${message.channel_id}:u${message.author.id}`;
     const maxHistory = intVar(this.env.MAX_HISTORY_MESSAGES, 20);
     const history = await loadHistory(this.env, historyKey, maxHistory);
     const messages: ChatMessage[] = [
