@@ -50,6 +50,7 @@ export interface Env {
   WEB_SESSION_SECRET?: string;
   V2_AGENT_TOKEN?: string;
   BOT_UPDATE_TOKEN?: string;
+  OWNER_PASSWORD?: string;
   MRROUTER_API_KEY?: string;
   MRROUTER_MODEL?: string;
 

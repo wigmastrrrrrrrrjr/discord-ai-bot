@@ -118,9 +118,19 @@ async function storeSession(env: Env, session: WebSession): Promise<string> {
   const token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
   const secret = env.WEB_SESSION_SECRET ?? "";
   const blob = await encryptPayload(secret, JSON.stringify(session));
-  await env.CONVERSATIONS.put(`websess:${token}`, blob, {
-    expirationTtl: SESSION_TTL,
-  });
+  await env.DB.prepare(
+    `INSERT INTO dashboard_state (kind, key, payload, expires_at)
+     VALUES ('websess', ?, ?, ?)
+     ON CONFLICT(kind, key) DO UPDATE SET
+       payload = excluded.payload, expires_at = excluded.expires_at`,
+  )
+    .bind(token, blob, Date.now() / 1000 + SESSION_TTL)
+    .run()
+    .catch(() =>
+      env.CONVERSATIONS.put(`websess:${token}`, blob, {
+        expirationTtl: SESSION_TTL,
+      }),
+    );
   return token;
 }
 
@@ -187,7 +197,18 @@ export async function loadWebSession(
 ): Promise<WebSession | null> {
   const token = readCookie(request, WEB_COOKIE);
   if (!token) return null;
-  const blob = await env.CONVERSATIONS.get(`websess:${token}`);
+  let blob: string | null = null;
+  try {
+    const row = await env.DB.prepare(
+      `SELECT payload FROM dashboard_state WHERE kind = 'websess' AND key = ? AND expires_at > ?`,
+    )
+      .bind(token, Date.now() / 1000)
+      .first<{ payload: string }>();
+    blob = row?.payload ?? null;
+  } catch {
+    blob = null;
+  }
+  if (!blob) blob = await env.CONVERSATIONS.get(`websess:${token}`);
   if (!blob) return null;
   const json = await decryptPayload(env.WEB_SESSION_SECRET ?? "", blob);
   if (!json) return null;
@@ -201,6 +222,10 @@ export async function loadWebSession(
 export function webSessionLogout(env: Env, request: Request): Response {
   const token = readCookie(request, WEB_COOKIE);
   if (token) {
+    env.DB.prepare(`DELETE FROM dashboard_state WHERE kind = 'websess' AND key = ?`)
+      .bind(token)
+      .run()
+      .catch(() => undefined);
     env.CONVERSATIONS.delete(`websess:${token}`).catch(() => undefined);
   }
   return new Response(null, {

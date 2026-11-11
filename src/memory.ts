@@ -1,5 +1,6 @@
 import type { Env } from "./env";
 import { encryptText, decryptText } from "./crypto";
+import { d1KvGet, d1KvPut, d1KvDelete, d1KvSweep } from "./db-state";
 import type { Interaction } from "./discord/types";
 
 export interface StoredMessage {
@@ -54,7 +55,7 @@ export async function loadHistory(
   maxMessages: number,
 ): Promise<StoredMessage[]> {
   try {
-    const raw = await env.CONVERSATIONS.get(key);
+    const raw = (await d1KvGet(env, key)) ?? (await env.CONVERSATIONS.get(key));
     if (!raw) return [];
     // Values are AES-GCM encrypted at rest. A plaintext legacy value is
     // accepted once and re-encrypted on the next save.
@@ -94,11 +95,11 @@ export async function saveHistory(
   }));
   const trimmed = trimToCharBudget(capped, historyMaxChars(env));
 
-  await env.CONVERSATIONS.put(key, await encryptText(env, JSON.stringify(trimmed)), {
-    expirationTtl: HISTORY_TTL_SECONDS,
-  });
+  await d1KvPut(env, key, await encryptText(env, JSON.stringify(trimmed)), HISTORY_TTL_SECONDS);
+  void d1KvSweep(env);
 }
 
 export async function clearHistory(env: Env, key: string): Promise<void> {
-  await env.CONVERSATIONS.delete(key);
+  await d1KvDelete(env, key);
+  await env.CONVERSATIONS.delete(key).catch(() => undefined);
 }

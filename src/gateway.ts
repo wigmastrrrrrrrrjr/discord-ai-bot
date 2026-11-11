@@ -31,6 +31,7 @@ import { ChannelStream } from "./discord/stream";
 import type { Env } from "./env";
 import { boolVar, intVar } from "./env";
 import { getGithubAuth, userHistoryKey } from "./github-auth";
+import { d1KvGet, d1KvPut } from "./db-state";
 import { loadHistory, saveHistory } from "./memory";
 import { recordBanForUser, assignUnverifiedRoleOnJoin } from "./verify-service";
 import {
@@ -692,10 +693,8 @@ export class DiscordGateway extends DurableObject<Env> {
 
     const seenKey = `gateway:seen:${message.id}`;
     try {
-      if (await this.env.CONVERSATIONS.get(seenKey)) return;
-      await this.env.CONVERSATIONS.put(seenKey, "1", {
-        expirationTtl: 300,
-      });
+      if (await d1KvGet(this.env, seenKey)) return;
+      await d1KvPut(this.env, seenKey, "1", 300);
     } catch {
       // Deduplication is best-effort.
     }
@@ -827,10 +826,8 @@ export class DiscordGateway extends DurableObject<Env> {
 
       const errorKey = `gateway:error:${message.channel_id}`;
       try {
-        if (!(await this.env.CONVERSATIONS.get(errorKey))) {
-          await this.env.CONVERSATIONS.put(errorKey, "1", {
-            expirationTtl: 300,
-          });
+        if (!(await d1KvGet(this.env, errorKey))) {
+          await d1KvPut(this.env, errorKey, "1", 300);
           const warning = `⚠️ Agent failed: ${text.slice(0, 500)}`;
           if (stream) {
             await stream.fail(warning);
@@ -857,10 +854,8 @@ export class DiscordGateway extends DurableObject<Env> {
     if (!modelChannel.available) {
       const noticeKey = `model-unavailable:${modelChannel.channelId}`;
       try {
-        if (await this.env.CONVERSATIONS.get(noticeKey)) return;
-        await this.env.CONVERSATIONS.put(noticeKey, "1", {
-          expirationTtl: 60,
-        });
+        if (await d1KvGet(this.env, noticeKey)) return;
+        await d1KvPut(this.env, noticeKey, "1", 60);
       } catch {
         // Best-effort.
       }

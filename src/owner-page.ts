@@ -55,6 +55,14 @@ const OWNER_HTML = `<!doctype html>
   .ok { color:#6fd39a; }
   .clickkey { color:var(--accent); cursor:pointer; text-decoration:underline dotted; }
   .hidden { display:none; }
+  #login-gate { position:fixed; inset:0; background:var(--bg); display:flex; align-items:center; justify-content:center; z-index:50; }
+  #login-gate .box { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:28px; width:min(360px,90vw); }
+  #login-gate h2 { margin:0 0 10px; color:var(--text); text-transform:none; letter-spacing:0; font-size:17px; }
+  #login-gate input { width:100%; margin-bottom:10px; }
+  #login-gate button { width:100%; }
+  #login-gate .err { margin-top:8px; }
+  #top-err { position:fixed; top:0; left:0; right:0; background:var(--danger); color:#fff; padding:8px 16px; font-size:13px; z-index:40; display:none; }
+  main { padding-top:0; }
 </style>
 </head>
 <body>
@@ -73,6 +81,16 @@ const OWNER_HTML = `<!doctype html>
   <button data-tab="sessions">Login Sessions</button>
   <button data-tab="tools">Controls</button>
 </nav>
+<div id="top-err"></div>
+<div id="login-gate">
+  <div class="box">
+    <h2>Owner login</h2>
+    <input type="password" id="login-pass" placeholder="Owner password" autocomplete="current-password">
+    <button class="act" id="login-btn">Unlock console</button>
+    <div class="err err hidden" id="login-err"></div>
+    <div class="muted" style="margin-top:10px; font-size:12px">Password set via the OWNER_PASSWORD secret. Your session lasts 30 days.</div>
+  </div>
+</div>
 <main>
 
 <section id="tab-overview" class="active">
@@ -195,13 +213,62 @@ function el(tag, cls, text) {
 function $(id) { return document.getElementById(id); }
 function show(id, on) { $(id).classList.toggle('hidden', !on); }
 
+function showError(msg) {
+  var b = $('top-err');
+  b.textContent = msg;
+  b.style.display = 'block';
+  clearTimeout(showError.t);
+  showError.t = setTimeout(function () { b.style.display = 'none'; }, 6000);
+}
+
 async function api(path, opts) {
   var res = await fetch('/api/owner' + path, opts);
   var data = {};
   try { data = await res.json(); } catch (e) {}
-  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status + ' ' + res.statusText));
+  if (res.status === 401) {
+    showLogin(true);
+    throw new Error(data.error || 'Not unlocked');
+  }
+  if (!res.ok) {
+    var msg = data.error || ('HTTP ' + res.status + ' ' + res.statusText);
+    showError(msg);
+    throw new Error(msg);
+  }
   return data;
 }
+
+function showLogin(on) { $('login-gate').style.display = on ? 'flex' : 'none'; }
+
+async function initAuth() {
+  try {
+    var d = await api('/whoami');
+    if (d.ok) showLogin(false);
+  } catch (e) {
+    showLogin(true);
+  }
+}
+
+async function doLogin() {
+  var errEl = $('login-err');
+  errEl.classList.add('hidden');
+  try {
+    await api('/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: $('login-pass').value })
+    });
+    $('login-pass').value = '';
+    showLogin(false);
+    loadOverview().catch(function (e) { if (String(e.message).indexOf('Not unlocked') === -1) showError(e.message); });
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+  }
+}
+
+$('login-btn').onclick = doLogin;
+$('login-pass').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
+initAuth();
 function badge(enc) {
   var b = el('span', 'badge ' + (enc ? 'enc' : 'plain'), enc ? 'encrypted' : 'plaintext');
   return b;
@@ -514,7 +581,7 @@ async function decryptBlob() {
   out.textContent = d.text;
 }
 
-loadOverview();
+loadOverview().catch(function (e) { if (String(e.message).indexOf('Not unlocked') === -1) showError(e.message); });
 </script>
 </body>
 </html>`;

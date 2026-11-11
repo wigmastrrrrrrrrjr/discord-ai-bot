@@ -92,3 +92,59 @@ export async function deleteState(
     await env.CONVERSATIONS.delete(key);
   }
 }
+
+// Generic D1-backed key/value store used for high-frequency writes so the
+// Workers KV free-tier put() quota is preserved for one-off records.
+export async function d1KvGet(env: Env, key: string): Promise<string | null> {
+  try {
+    const row = await env.DB.prepare(
+      `SELECT value FROM d1_kv WHERE key = ? AND (expires_at IS NULL OR expires_at > ?)`,
+    )
+      .bind(key, Date.now() / 1000)
+      .first<{ value: string }>();
+    return row?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function d1KvPut(
+  env: Env,
+  key: string,
+  value: string,
+  ttlSeconds?: number,
+): Promise<void> {
+  const expiresAt = ttlSeconds ? Date.now() / 1000 + ttlSeconds : null;
+  try {
+    await env.DB.prepare(
+      `INSERT INTO d1_kv (key, value, expires_at) VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET
+         value = excluded.value, expires_at = excluded.expires_at`,
+    )
+      .bind(key, value, expiresAt)
+      .run();
+  } catch {
+    // best-effort
+  }
+}
+
+export async function d1KvDelete(env: Env, key: string): Promise<void> {
+  try {
+    await env.DB.prepare(`DELETE FROM d1_kv WHERE key = ?`)
+      .bind(key)
+      .run();
+  } catch {
+    // best-effort
+  }
+}
+
+// Opportunistic cleanup; cheap enough to call alongside writes.
+export async function d1KvSweep(env: Env): Promise<void> {
+  try {
+    await env.DB.prepare(`DELETE FROM d1_kv WHERE expires_at IS NOT NULL AND expires_at <= ?`)
+      .bind(Date.now() / 1000)
+      .run();
+  } catch {
+    // best-effort
+  }
+}

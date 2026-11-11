@@ -33,6 +33,29 @@ const D1_TABLES = new Set([
   "agent_relay_tokens",
 ]);
 
+const OWNER_COOKIE = "owner_console";
+const OWNER_SESSION_TTL = 30 * 24 * 3600;
+
+function ownerCookieName(): string {
+  return OWNER_COOKIE;
+}
+
+async function ownerSessionToken(env: Env, request: Request): Promise<string | null> {
+  const match = /(?:^|;\s*)owner_console=([^;]+)/.exec(request.headers.get("cookie") ?? "");
+  const token = match?.[1];
+  if (!token) return null;
+  try {
+    const row = await env.DB.prepare(
+      `SELECT payload FROM dashboard_state WHERE kind = 'owner-sess' AND key = ? AND expires_at > ?`,
+    )
+      .bind(token, Date.now() / 1000)
+      .first<{ payload: string }>();
+    return row?.payload === OWNER_USER_ID ? token : null;
+  } catch {
+    return null;
+  }
+}
+
 async function isOwner(
   env: Env,
   request: Request,
@@ -41,6 +64,16 @@ async function isOwner(
   if (env.BOT_UPDATE_TOKEN && token === env.BOT_UPDATE_TOKEN) {
     return { ok: true, via: "token" };
   }
+  if (env.OWNER_PASSWORD && (await ownerSessionToken(env, request))) {
+    return { ok: true, via: "password" };
+  }
+  // Discord dashboard login (db-state session cookie, userId === owner).
+  const { loadSession } = await import("./dashboard");
+  const dash = await loadSession(env, request).catch(() => null);
+  if (dash && dash.session.userId === OWNER_USER_ID) {
+    return { ok: true, via: "discord-dashboard" };
+  }
+  // Google web session (websess cookie, sub === owner).
   const session = await loadWebSession(env, request).catch(() => null);
   if (session && session.sub === OWNER_USER_ID) {
     return { ok: true, via: "discord" };
@@ -117,10 +150,61 @@ export async function handleOwnerApi(
   request: Request,
   url: URL,
 ): Promise<Response> {
-  const auth = await isOwner(env, request);
-  if (!auth.ok) return fail("Owner access required", 403);
   const pathname = url.pathname.replace(/^\/api\/owner/, "");
   const method = request.method;
+  const isPublic = pathname === "/login" || pathname === "/logout" || pathname === "/whoami";
+  const auth = isPublic ? { ok: false, via: "" } : await isOwner(env, request);
+  if (!isPublic && !auth.ok) return fail("Owner access required", 403);
+
+  // ---- password login ----
+  if (pathname === "/login" && method === "POST") {
+    if (!env.OWNER_PASSWORD) return fail("OWNER_PASSWORD secret is not set", 400);
+    let body: { password?: unknown } = {};
+    try { body = (await request.json()) as typeof body; } catch { return fail("Invalid JSON"); }
+    const password = typeof body.password === "string" ? body.password : "";
+    const ok = password.length > 0 && password === env.OWNER_PASSWORD;
+    if (!ok) return fail("Wrong password", 401);
+    try {
+      const token = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "");
+      // D1 (dashboard_state) instead of KV — KV free tier put() quota is
+      // easy to blow through; login sessions belong in D1 anyway.
+      const expiresAt = Date.now() / 1000 + OWNER_SESSION_TTL;
+      await env.DB.prepare(
+        `INSERT INTO dashboard_state (kind, key, payload, expires_at)
+         VALUES ('owner-sess', ?, ?, ?)
+         ON CONFLICT(kind, key) DO UPDATE SET
+           payload = excluded.payload, expires_at = excluded.expires_at`,
+      )
+        .bind(token, OWNER_USER_ID, expiresAt)
+        .run();
+      const headers = new Headers({ "content-type": "application/json" });
+      headers.append(
+        "set-cookie",
+        `owner_console=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${OWNER_SESSION_TTL}`,
+      );
+      return new Response(JSON.stringify({ ok: true }), { headers });
+    } catch (error) {
+      return fail(`login failed: ${error instanceof Error ? error.message : String(error)}`, 500);
+    }
+  }
+
+  if (pathname === "/logout" && method === "POST") {
+    const token = await ownerSessionToken(env, request);
+    if (token) {
+      await env.DB.prepare(`DELETE FROM dashboard_state WHERE kind = 'owner-sess' AND key = ?`)
+        .bind(token)
+        .run()
+        .catch(() => undefined);
+    }
+    const headers = new Headers({ "content-type": "application/json" });
+    headers.append("set-cookie", `${ownerCookieName()}=; Path=/; HttpOnly; Max-Age=0`);
+    return new Response(JSON.stringify({ ok: true }), { headers });
+  }
+
+  // ---- auth probe (page uses this to show the login gate) ----
+  if (pathname === "/whoami" && method === "GET") {
+    return json({ ok: auth.ok, via: auth.via });
+  }
 
   // ---- overview ----
   if (pathname === "/overview" && method === "GET") {

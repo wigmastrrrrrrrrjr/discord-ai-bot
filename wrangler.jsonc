@@ -49,7 +49,7 @@
     "WORKERS_AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     "OPENROUTER_MODEL": "openai/gpt-4o-mini",
     "OLLAMA_BASE_URL": "https://ollama.com",
-    "OLLAMA_MODEL": "llama3.3:70b",
+    "OLLAMA_MODEL": "glm-5.3-flash:cloud",
     "MAX_HISTORY_MESSAGES": "20",
     "MAX_TEMP_BLOB_BYTES": "5242880",
     "TEMP_BLOB_TTL_DAYS": "30",
