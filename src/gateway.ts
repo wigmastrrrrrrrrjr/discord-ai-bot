@@ -642,13 +642,6 @@ export class DiscordGateway extends DurableObject<Env> {
     message: GatewayMessage,
     notice: string,
   ): Promise<void> {
-    const key = `tos:notice:${message.author.id}`;
-    try {
-      if (await this.env.CONVERSATIONS.get(key)) return;
-      await this.env.CONVERSATIONS.put(key, "1", { expirationTtl: 86400 });
-    } catch {
-      // dedup best effort
-    }
     try {
       await sendChannelMessage(this.env, message.channel_id, notice.slice(0, 600));
     } catch {

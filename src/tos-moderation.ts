@@ -109,9 +109,9 @@ export function banNotice(ban: UserBan): string {
     ? `until <t:${Math.floor(new Date(ban.until).getTime() / 1000)}:f>`
     : "permanently";
   return (
-    `Your access to theAIchatbot has been restricted ${untilText} for a Terms of Service violation.` +
-    (ban.reason ? `\nReason: ${ban.reason}` : "") +
-    `\nReview the terms at https://discord-ai-bot.csomeone301.workers.dev/terms`
+    `⚠️ **${"You are banned."}** You broke the Terms of Service. theAIchatbot is refusing all of your messages ${untilText}. This is not an error and it will not quietly go away.` +
+    (ban.reason ? `\nViolation: ${ban.reason}` : "") +
+    `\nEvery message you send while banned gets this warning. Review the terms you broke: https://discord-ai-bot.csomeone301.workers.dev/terms`
   );
 }
 
